@@ -1,0 +1,8 @@
+{
+  "id": "acme/style-lint",
+  "version": "0.1.0",
+  "contract": "0.1",
+  "hooks": {"client_bound": ["response"]},
+  "read_only": true,
+  "command": ["python", "-u", "plugin.py"]
+}

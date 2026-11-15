@@ -1,0 +1,53 @@
+host:
+  listen: 127.0.0.1:4000
+  max_body_bytes: 33554432
+
+server:
+  base_url: env:OPENAI_BASE_URL
+  timeout_ms: 120000
+  passthrough_paths:
+    - /v1/models
+    - /v1/files
+    - /v1/embeddings
+
+plugins:
+  entries:
+    - id: acme/prompt-guard
+      manifest: ../plugins/prompt-guard/plugin.json
+      required: true
+      config:
+        patterns: [".*ignore previous instructions.*"]
+    - id: acme/style-lint
+      manifest: ../plugins/style-lint/plugin.json
+      required: true
+      config:
+        banned: ["—", "–"]
+    - id: acme/pii-mask
+      manifest: ../plugins/pii-mask/plugin.json
+      required: false
+      config: {}
+
+pipeline:
+  server_bound:
+    - stage_id: guard-in
+      plugin: acme/prompt-guard
+      hook: request
+      timeout_ms: 250
+      on_error: fail_closed
+  client_bound:
+    - stage_id: guard-out
+      plugin: acme/style-lint
+      hook: response
+      timeout_ms: 50
+      on_error: fail_closed
+  repair:
+    max_attempts: 2
+    on_exhaustion: violation
+
+journal:
+  enabled: true
+  path: ./journal
+  include_bodies: false
+
+telemetry:
+  mode: observer

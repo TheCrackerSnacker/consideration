@@ -1,0 +1,8 @@
+{
+  "id": "acme/prompt-guard",
+  "version": "0.1.0",
+  "contract": "0.1",
+  "hooks": {"server_bound": ["request"]},
+  "read_only": true,
+  "command": ["python", "-u", "plugin.py"]
+}

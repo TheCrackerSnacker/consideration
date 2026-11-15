@@ -11,7 +11,7 @@ from typing import Any
 from .config import Config
 from .envelope import validate_chat_request, validate_chat_response
 from .errors import EgressError, RequestError
-from .journal import Journal
+from .journal import Journal, JournalRecord
 from .pipeline import PipelineRunner
 from .plugin import PluginManager
 from .repair import all_retryable, build_repair_request
@@ -36,6 +36,11 @@ from .upstream import (
 from .util import deep_copy, dumps, json_hash, new_request_id, now_iso, truncate_bytes
 
 CHAT_PATH = "/v1/chat/completions"
+
+
+def elapsed_ms(started_monotonic: float) -> int:
+    """Return elapsed monotonic time in the journal's millisecond units."""
+    return int((time.monotonic() - started_monotonic) * 1000)
 
 
 @dataclass
@@ -129,30 +134,23 @@ class App:
                 error_type="consideration_internal",
             )
             response = self._terminal_response(terminal, request_id, 0)
-            record = {
-                "schema": 1,
-                "request_id": request_id,
-                "config_hash": self.config.config_hash,
-                "started_at": started_at,
-                "duration_ms": int((time.monotonic() - started) * 1000),
-                "client_streamed": False,
-                "direction_results": {},
-                "server": {"requests": []},
-                "repairs": [],
-                "state_writes": [],
-                "response_bytes": len(response.body),
-            }
-        record["duration_ms"] = int((time.monotonic() - started) * 1000)
-        record["response_bytes"] = len(response.body)
+            record = JournalRecord(
+                request_id=request_id,
+                config_hash=self.config.config_hash,
+                started_at=started_at,
+                started_monotonic=started,
+                client_streamed=False,
+            )
+        serialized_record = record.serialize(len(response.body))
         try:
-            self.journal.write(record)
+            self.journal.write(serialized_record)
         except Exception:
             pass
         self._emit(
             "request.end",
             request_id=request_id,
             status=response.status,
-            duration_ms=record["duration_ms"],
+            duration_ms=serialized_record["duration_ms"],
         )
         return response
 
@@ -164,7 +162,7 @@ class App:
         request_id: str,
         started_at: str,
         started: float,
-    ) -> tuple[Response, dict[str, Any]]:
+    ) -> tuple[Response, JournalRecord]:
         try:
             raw = request.body.decode("utf-8")
             body = json.loads(raw)
@@ -172,16 +170,24 @@ class App:
             terminal = request_error(
                 request_id, f"Request body is not valid JSON: {exc}"
             )
-            return self._terminal_response(terminal, request_id, 0), self._record(
-                request_id, started_at, started, False
+            return self._terminal_response(terminal, request_id, 0), JournalRecord(
+                request_id=request_id,
+                config_hash=self.config.config_hash,
+                started_at=started_at,
+                started_monotonic=started,
+                client_streamed=False,
             )
 
         try:
             validate_chat_request(body)
         except RequestError as exc:
             terminal = request_error(request_id, str(exc))
-            return self._terminal_response(terminal, request_id, 0), self._record(
-                request_id, started_at, started, False
+            return self._terminal_response(terminal, request_id, 0), JournalRecord(
+                request_id=request_id,
+                config_hash=self.config.config_hash,
+                started_at=started_at,
+                started_monotonic=started,
+                client_streamed=False,
             )
 
         client_streamed = body.get("stream") is True
@@ -192,7 +198,13 @@ class App:
 
         self._emit("request.start", request_id=request_id, path=request.path)
 
-        record = self._record(request_id, started_at, started, client_streamed)
+        record = JournalRecord(
+            request_id=request_id,
+            config_hash=self.config.config_hash,
+            started_at=started_at,
+            started_monotonic=started,
+            client_streamed=client_streamed,
+        )
         bodies: dict[str, Any] = {}
         if self.config.journal.include_bodies:
             bodies["request"] = self._body_entry(body)
@@ -200,7 +212,7 @@ class App:
                 "remote_addr": request.remote_addr,
                 "headers": dict(request.headers),
             }
-            record["bodies"] = bodies
+            record.set_bodies(bodies)
 
         meta = {
             "request_id": request_id,
@@ -215,9 +227,9 @@ class App:
 
         # 4-5: server-bound pipeline.
         server_result = self.runner.run("server_bound", envelope, request_id, 0, state)
-        record["direction_results"]["server_bound"] = server_result.journal()
-        record["state_writes"].extend(
-            write.journal() for write in server_result.state_writes
+        record.set_direction_result("server_bound", server_result.journal())
+        record.add_state_writes(
+            [write.journal() for write in server_result.state_writes]
         )
         if server_result.terminal is not None:
             self._emit(
@@ -263,7 +275,7 @@ class App:
             attempt=0,
             validate_json=not (client_streamed and not client_bound),
         )
-        record["server"]["requests"].append(self._server_entry(0, call))
+        record.add_server_request(self._server_entry(0, call))
         if self.config.journal.include_bodies and call.body is not None:
             bodies.setdefault("server_responses", []).append(
                 self._body_entry(call.body)
@@ -324,9 +336,7 @@ class App:
             attempt_record = {"attempt": attempt}
             attempt_record.update(result.journal())
             attempts.append(attempt_record)
-            record["state_writes"].extend(
-                write.journal() for write in result.state_writes
-            )
+            record.add_state_writes([write.journal() for write in result.state_writes])
 
             if result.terminal is None:
                 accepted = result.envelope
@@ -347,11 +357,14 @@ class App:
             if result.terminal.kind != "violation":
                 if repairs:
                     repairs[-1]["outcome"] = "exhausted"
-                record["direction_results"]["client_bound"] = {
-                    "attempts": attempts,
-                    "terminal": attempt_record["terminal"],
-                }
-                record["repairs"] = repairs
+                record.set_direction_result(
+                    "client_bound",
+                    {
+                        "attempts": attempts,
+                        "terminal": attempt_record["terminal"],
+                    },
+                )
+                record.set_repairs(repairs)
                 return (
                     self._terminal_response(result.terminal, request_id, attempt),
                     record,
@@ -410,9 +423,7 @@ class App:
                     "exhausted": False,
                 },
             )
-            record["server"]["requests"].append(
-                self._server_entry(next_attempt, repair_call)
-            )
+            record.add_server_request(self._server_entry(next_attempt, repair_call))
             if self.config.journal.include_bodies and repair_call.body is not None:
                 bodies.setdefault("server_responses", []).append(
                     self._body_entry(repair_call.body)
@@ -429,11 +440,14 @@ class App:
                     attempt=next_attempt,
                     outcome=repair_entry["outcome"],
                 )
-                record["direction_results"]["client_bound"] = {
-                    "attempts": attempts,
-                    "terminal": attempt_record["terminal"],
-                }
-                record["repairs"] = repairs
+                record.set_direction_result(
+                    "client_bound",
+                    {
+                        "attempts": attempts,
+                        "terminal": attempt_record["terminal"],
+                    },
+                )
+                record.set_repairs(repairs)
                 return (
                     self._terminal_response(
                         repair_call.terminal, request_id, next_attempt
@@ -463,11 +477,14 @@ class App:
                 return self._terminal_response(terminal, request_id, attempt), record
             if self.config.journal.include_bodies:
                 bodies["response"] = self._body_entry(accepted["body"])
-            record["direction_results"]["client_bound"] = {
-                "attempts": attempts,
-                "terminal": None,
-            }
-            record["repairs"] = repairs
+            record.set_direction_result(
+                "client_bound",
+                {
+                    "attempts": attempts,
+                    "terminal": None,
+                },
+            )
+            record.set_repairs(repairs)
             if client_streamed:
                 response = self._success_response(
                     request_id,
@@ -503,11 +520,14 @@ class App:
             attempts=repair_block["attempts"],
             cause=repair_block["cause"],
         )
-        record["direction_results"]["client_bound"] = {
-            "attempts": attempts,
-            "terminal": attempts[-1]["terminal"],
-        }
-        record["repairs"] = repairs
+        record.set_direction_result(
+            "client_bound",
+            {
+                "attempts": attempts,
+                "terminal": attempts[-1]["terminal"],
+            },
+        )
+        record.set_repairs(repairs)
         terminal = exhaustion_terminal(
             request_id,
             last_violations,
@@ -538,7 +558,7 @@ class App:
         except UpstreamTimeout:
             return ServerCall(
                 status=None,
-                duration_ms=int((time.monotonic() - started) * 1000),
+                duration_ms=elapsed_ms(started),
                 terminal=server_failure(
                     request_id,
                     "server_timeout",
@@ -549,7 +569,7 @@ class App:
         except UpstreamUnreachable:
             return ServerCall(
                 status=None,
-                duration_ms=int((time.monotonic() - started) * 1000),
+                duration_ms=elapsed_ms(started),
                 terminal=server_failure(
                     request_id,
                     "server_unreachable",
@@ -557,7 +577,7 @@ class App:
                     repair,
                 ),
             )
-        duration = int((time.monotonic() - started) * 1000)
+        duration = elapsed_ms(started)
         headers = list(response.headers)
 
         if not 200 <= response.status < 300:
@@ -640,9 +660,15 @@ class App:
         request_id: str,
         started_at: str,
         started: float,
-    ) -> tuple[Response, dict[str, Any]]:
-        record = self._record(request_id, started_at, started, False)
-        record["passthrough"] = {"method": request.method, "path": request.path}
+    ) -> tuple[Response, JournalRecord]:
+        record = JournalRecord(
+            request_id=request_id,
+            config_hash=self.config.config_hash,
+            started_at=started_at,
+            started_monotonic=started,
+            client_streamed=False,
+        )
+        record.set_passthrough(request.method, request.path)
         started_call = time.monotonic()
         try:
             response = self.upstream.request(
@@ -656,47 +682,49 @@ class App:
             terminal = server_failure(
                 request_id, "server_timeout", "Server did not respond in time."
             )
-            record["server"]["requests"].append(
+            record.add_server_request(
                 {
                     "attempt": 0,
                     "status": None,
-                    "duration_ms": int((time.monotonic() - started_call) * 1000),
+                    "duration_ms": elapsed_ms(started_call),
                     "error": "server_timeout",
                 }
             )
-            record["passthrough"]["status"] = terminal.status
+            record.set_passthrough_status(terminal.status)
             return self._terminal_response(terminal, request_id, 0), record
         except UpstreamUnreachable:
             terminal = server_failure(
                 request_id, "server_unreachable", "Server did not respond."
             )
-            record["server"]["requests"].append(
+            record.add_server_request(
                 {
                     "attempt": 0,
                     "status": None,
-                    "duration_ms": int((time.monotonic() - started_call) * 1000),
+                    "duration_ms": elapsed_ms(started_call),
                     "error": "server_unreachable",
                 }
             )
-            record["passthrough"]["status"] = terminal.status
+            record.set_passthrough_status(terminal.status)
             return self._terminal_response(terminal, request_id, 0), record
 
-        record["server"]["requests"].append(
+        record.add_server_request(
             {
                 "attempt": 0,
                 "status": response.status,
-                "duration_ms": int((time.monotonic() - started_call) * 1000),
+                "duration_ms": elapsed_ms(started_call),
             }
         )
-        record["passthrough"]["status"] = response.status
+        record.set_passthrough_status(response.status)
         headers = filter_response_headers(response.headers)
         headers["x-consideration-request-id"] = request_id
         headers["x-consideration-repairs"] = "0"
         if self.config.journal.include_bodies:
-            record["bodies"] = {
-                "request": self._decode(request.body),
-                "response": self._decode(response.body),
-            }
+            record.set_bodies(
+                {
+                    "request": self._decode(request.body),
+                    "response": self._decode(response.body),
+                }
+            )
         return Response(response.status, headers, response.body), record
 
     # -- responses -----------------------------------------------------
@@ -745,23 +773,6 @@ class App:
         return Response(terminal.status, headers, terminal.body_bytes())
 
     # -- journal -------------------------------------------------------
-
-    def _record(
-        self, request_id: str, started_at: str, started: float, streamed: bool
-    ) -> dict[str, Any]:
-        return {
-            "schema": 1,
-            "request_id": request_id,
-            "config_hash": self.config.config_hash,
-            "started_at": started_at,
-            "duration_ms": int((time.monotonic() - started) * 1000),
-            "client_streamed": streamed,
-            "direction_results": {},
-            "server": {"requests": []},
-            "repairs": [],
-            "state_writes": [],
-            "response_bytes": 0,
-        }
 
     def _decode(self, data: bytes) -> Any:
         try:

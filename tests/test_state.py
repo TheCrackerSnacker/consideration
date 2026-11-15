@@ -8,7 +8,9 @@ from consideration.state import MAX_KEYS, StateStore, apply_writes, state_value
 
 class StateTests(unittest.TestCase):
     def test_set_and_delete(self):
-        scope, keys = apply_writes({"a": 1}, {"set": {"b": 2}, "delete": ["a", "missing"]})
+        scope, keys = apply_writes(
+            {"a": 1}, {"set": {"b": 2}, "delete": ["a", "missing"]}
+        )
         self.assertEqual(scope, {"b": 2})
         self.assertEqual(keys, ["b", "a", "missing"])
 

@@ -70,10 +70,16 @@ def main() -> None:
                 result = {"action": "patch", "patch": CONFIG.get("patch", {})}
             elif mode == "state_patch":
                 params = frame.get("params") or {}
-                result = {"action": "patch", "patch": {"x_state": params.get("state", {})}}
+                result = {
+                    "action": "patch",
+                    "patch": {"x_state": params.get("state", {})},
+                }
             elif mode == "context_patch":
                 params = frame.get("params") or {}
-                result = {"action": "patch", "patch": {"x_context": params.get("context")}}
+                result = {
+                    "action": "patch",
+                    "patch": {"x_context": params.get("context")},
+                }
             elif mode == "meta_patch":
                 params = frame.get("params") or {}
                 result = {

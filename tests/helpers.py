@@ -55,7 +55,9 @@ def config_text(
     base_url: str = "http://127.0.0.1:9/v1",
 ) -> str:
     stage_extra = stage_extra or {}
-    extra_lines = "".join(f"      {key}: {json.dumps(value)}\n" for key, value in stage_extra.items())
+    extra_lines = "".join(
+        f"      {key}: {json.dumps(value)}\n" for key, value in stage_extra.items()
+    )
     plugin_config = plugin_config or {}
     lines = [
         "host:",

@@ -150,11 +150,15 @@ class _Flow:
                 self.i += 2
                 continue
             if ch == quote:
-                if quote == "'" and self.i + 1 < len(self.text) and self.text[self.i + 1] == "'":
+                if (
+                    quote == "'"
+                    and self.i + 1 < len(self.text)
+                    and self.text[self.i + 1] == "'"
+                ):
                     self.i += 2
                     continue
                 self.i += 1
-                return _unquote(self.text[start:self.i], self.line)
+                return _unquote(self.text[start : self.i], self.line)
             self.i += 1
         raise YAMLError(f"line {self.line}: unterminated quoted string")
 
@@ -164,12 +168,15 @@ class _Flow:
             ch = self.text[self.i]
             if ch in stops:
                 if ch == ":" and allow_colon:
-                    if self.i + 1 < len(self.text) and self.text[self.i + 1] not in " \t":
+                    if (
+                        self.i + 1 < len(self.text)
+                        and self.text[self.i + 1] not in " \t"
+                    ):
                         self.i += 1
                         continue
                 break
             self.i += 1
-        return self.text[start:self.i].strip()
+        return self.text[start : self.i].strip()
 
     def _seq(self) -> list[Any]:
         self.i += 1
@@ -260,7 +267,9 @@ def _split_key(text: str, line: int) -> tuple[str, str] | None:
 class _Lines:
     def __init__(self, text: str):
         self.items: list[tuple[int, str, int]] = []
-        for number, raw in enumerate(text.replace("\r\n", "\n").replace("\r", "\n").split("\n"), 1):
+        for number, raw in enumerate(
+            text.replace("\r\n", "\n").replace("\r", "\n").split("\n"), 1
+        ):
             leading = raw[: len(raw) - len(raw.lstrip(" \t"))]
             if "\t" in leading:
                 raise YAMLError(f"line {number}: tabs are not allowed for indentation")
@@ -271,14 +280,18 @@ class _Lines:
             self.items.append((indent, stripped.strip(), number))
 
 
-def _parse_block(lines: list[tuple[int, str, int]], index: int, indent: int) -> tuple[Any, int]:
+def _parse_block(
+    lines: list[tuple[int, str, int]], index: int, indent: int
+) -> tuple[Any, int]:
     text = lines[index][1]
     if text == "-" or text.startswith("- "):
         return _parse_sequence(lines, index, indent)
     return _parse_mapping(lines, index, indent)
 
 
-def _parse_mapping(lines: list[tuple[int, str, int]], index: int, indent: int) -> tuple[dict[str, Any], int]:
+def _parse_mapping(
+    lines: list[tuple[int, str, int]], index: int, indent: int
+) -> tuple[dict[str, Any], int]:
     result: dict[str, Any] = {}
     while index < len(lines):
         ind, text, number = lines[index]
@@ -305,7 +318,9 @@ def _parse_mapping(lines: list[tuple[int, str, int]], index: int, indent: int) -
     return result, index
 
 
-def _parse_sequence(lines: list[tuple[int, str, int]], index: int, indent: int) -> tuple[list[Any], int]:
+def _parse_sequence(
+    lines: list[tuple[int, str, int]], index: int, indent: int
+) -> tuple[list[Any], int]:
     items: list[Any] = []
     while index < len(lines):
         ind, text, number = lines[index]
@@ -339,7 +354,9 @@ def _parse_sequence(lines: list[tuple[int, str, int]], index: int, indent: int) 
             if index < len(lines) and lines[index][0] > indent:
                 more, index = _parse_block(lines, index, lines[index][0])
                 if not isinstance(more, dict):
-                    raise YAMLError(f"line {number}: sequence item mixes a mapping with a block")
+                    raise YAMLError(
+                        f"line {number}: sequence item mixes a mapping with a block"
+                    )
                 item.update(more)
             items.append(item)
             continue

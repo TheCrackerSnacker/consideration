@@ -14,7 +14,6 @@ from consideration.server import ConsiderationHTTPServer
 from consideration.upstream import UpstreamClient
 from tests.helpers import make_config
 
-
 REQUEST = {
     "model": "gpt-x",
     "messages": [{"role": "user", "content": "Hello"}],
@@ -36,7 +35,9 @@ class ServerTests(unittest.TestCase):
             manager.shutdown_all()
         self.tmp.cleanup()
 
-    def start_app_server(self, *, host_extra: str = "", base_url: str = "http://127.0.0.1:9/v1"):
+    def start_app_server(
+        self, *, host_extra: str = "", base_url: str = "http://127.0.0.1:9/v1"
+    ):
         config = make_config(
             self.root,
             server_bound=False,
@@ -54,10 +55,19 @@ class ServerTests(unittest.TestCase):
         thread.start()
         return server
 
-    def request(self, server, method="POST", path="/v1/chat/completions", body=None, headers=None):
+    def request(
+        self,
+        server,
+        method="POST",
+        path="/v1/chat/completions",
+        body=None,
+        headers=None,
+    ):
         payload = json.dumps(REQUEST).encode() if body is None else body
         connection = http.client.HTTPConnection(*server.server_address, timeout=5)
-        connection.request(method, path, payload, headers or {"Content-Type": "application/json"})
+        connection.request(
+            method, path, payload, headers or {"Content-Type": "application/json"}
+        )
         response = connection.getresponse()
         data = response.read()
         connection.close()
@@ -65,7 +75,9 @@ class ServerTests(unittest.TestCase):
 
     def test_post_chat_success(self):
         upstream = _start_upstream(self.servers)
-        server = self.start_app_server(base_url=f"http://127.0.0.1:{upstream.server_address[1]}/v1")
+        server = self.start_app_server(
+            base_url=f"http://127.0.0.1:{upstream.server_address[1]}/v1"
+        )
         status, headers, body = self.request(server)
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Type"], "application/json")
@@ -73,14 +85,18 @@ class ServerTests(unittest.TestCase):
 
     def test_get_passthrough(self):
         upstream = _start_upstream(self.servers, status=204, body=b"")
-        server = self.start_app_server(base_url=f"http://127.0.0.1:{upstream.server_address[1]}/v1")
+        server = self.start_app_server(
+            base_url=f"http://127.0.0.1:{upstream.server_address[1]}/v1"
+        )
         status, _, body = self.request(server, "GET", "/v1/models", b"")
         self.assertEqual(status, 204)
         self.assertEqual(body, b"")
 
     def test_chunked_request_body(self):
         upstream = _start_upstream(self.servers)
-        server = self.start_app_server(base_url=f"http://127.0.0.1:{upstream.server_address[1]}/v1")
+        server = self.start_app_server(
+            base_url=f"http://127.0.0.1:{upstream.server_address[1]}/v1"
+        )
         connection = http.client.HTTPConnection(*server.server_address, timeout=5)
         payload = json.dumps(REQUEST).encode()
         connection.putrequest("POST", "/v1/chat/completions")

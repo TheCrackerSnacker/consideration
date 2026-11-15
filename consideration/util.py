@@ -11,7 +11,7 @@ from typing import Any
 
 def now_iso() -> str:
     return (
-        _dt.datetime.now(_dt.timezone.utc)
+        _dt.datetime.now(_dt.UTC)
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z")
     )

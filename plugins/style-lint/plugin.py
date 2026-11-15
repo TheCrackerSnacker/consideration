@@ -12,7 +12,7 @@ def handler(params, config):
     banned = config.get("banned", ["—", "–"])
     violations = []
     for index, choice in enumerate(body.get("choices", [])):
-        content = ((choice.get("message") or {}).get("content"))
+        content = (choice.get("message") or {}).get("content")
         if not isinstance(content, str):
             continue
         for character in banned:
@@ -22,16 +22,30 @@ def handler(params, config):
                 if position < 0:
                     break
                 prefix = content[:position].encode("utf-8")
-                violations.append({
-                    "code": "style.em_dash" if character == "—" else "style.banned_character",
-                    "severity": "error",
-                    "message": f"Output contains banned character {character!r}.",
-                    "hint": "Rewrite without the banned character.",
-                    "retryable": True,
-                    "spans": [{"path": f"/choices/{index}/message/content", "start": len(prefix), "end": len(prefix) + len(character.encode("utf-8"))}],
-                })
+                violations.append(
+                    {
+                        "code": "style.em_dash"
+                        if character == "—"
+                        else "style.banned_character",
+                        "severity": "error",
+                        "message": f"Output contains banned character {character!r}.",
+                        "hint": "Rewrite without the banned character.",
+                        "retryable": True,
+                        "spans": [
+                            {
+                                "path": f"/choices/{index}/message/content",
+                                "start": len(prefix),
+                                "end": len(prefix) + len(character.encode("utf-8")),
+                            }
+                        ],
+                    }
+                )
                 start = position + len(character)
-    return {"action": "terminate", "violations": violations} if violations else {"action": "continue"}
+    return (
+        {"action": "terminate", "violations": violations}
+        if violations
+        else {"action": "continue"}
+    )
 
 
 serve("acme/style-lint", {"client_bound": ["response"]}, handler)

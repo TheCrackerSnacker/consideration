@@ -11,7 +11,8 @@ from typing import Any
 
 from . import CONTRACT_VERSION
 from .util import canonical_json, sha256_bytes
-from .yamlmini import YAMLError, loads as yaml_loads
+from .yamlmini import YAMLError
+from .yamlmini import loads as yaml_loads
 
 
 class ConfigError(ValueError):
@@ -196,11 +197,15 @@ def _load_manifest(path: Path, entry_id: str) -> tuple[dict[str, Any], str, str]
     try:
         raw = path.read_bytes()
     except OSError as exc:
-        raise ConfigError(f"plugin {entry_id}: cannot read manifest {path}: {exc}") from exc
+        raise ConfigError(
+            f"plugin {entry_id}: cannot read manifest {path}: {exc}"
+        ) from exc
     try:
         manifest = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ConfigError(f"plugin {entry_id}: invalid manifest JSON {path}: {exc}") from exc
+        raise ConfigError(
+            f"plugin {entry_id}: invalid manifest JSON {path}: {exc}"
+        ) from exc
     if not isinstance(manifest, dict):
         raise ConfigError(f"plugin {entry_id}: manifest must be a JSON object")
     for key in ("id", "version", "contract", "hooks", "read_only"):
@@ -219,8 +224,12 @@ def _load_manifest(path: Path, entry_id: str) -> tuple[dict[str, Any], str, str]
         raise ConfigError(f"plugin {entry_id}: hooks must be an object")
     for direction in ("server_bound", "client_bound"):
         values = hooks.get(direction, [])
-        if not isinstance(values, list) or any(v not in ("request", "response") for v in values):
-            raise ConfigError(f"plugin {entry_id}: hooks.{direction} must be a list of hook names")
+        if not isinstance(values, list) or any(
+            v not in ("request", "response") for v in values
+        ):
+            raise ConfigError(
+                f"plugin {entry_id}: hooks.{direction} must be a list of hook names"
+            )
     return manifest, sha256_bytes(raw), str(path)
 
 
@@ -303,9 +312,13 @@ def _parse_host(raw: dict[str, Any]) -> tuple[str, int, int, tuple[str, ...]]:
         raise ConfigError("host.listen port must be an integer") from exc
     if not 0 <= port <= 65535:
         raise ConfigError("host.listen port must be between 0 and 65535")
-    max_body = _require_int(host.get("max_body_bytes", 32 * 1024 * 1024), "host.max_body_bytes", 1)
+    max_body = _require_int(
+        host.get("max_body_bytes", 32 * 1024 * 1024), "host.max_body_bytes", 1
+    )
     allowlist = host.get("header_allowlist", list(DEFAULT_HEADER_ALLOWLIST))
-    if not isinstance(allowlist, list) or any(not isinstance(v, str) for v in allowlist):
+    if not isinstance(allowlist, list) or any(
+        not isinstance(v, str) for v in allowlist
+    ):
         raise ConfigError("host.header_allowlist must be a list of strings")
     return host_part, port, max_body, tuple(allowlist)
 
@@ -339,7 +352,9 @@ def _parse_server(raw: dict[str, Any]) -> ServerConfig:
             raise ConfigError(f"server.headers.{name} must be a string")
         headers[str(name)] = value
     paths = server.get("passthrough_paths", [])
-    if not isinstance(paths, list) or any(not isinstance(p, str) or not p.startswith("/") for p in paths):
+    if not isinstance(paths, list) or any(
+        not isinstance(p, str) or not p.startswith("/") for p in paths
+    ):
         raise ConfigError("server.passthrough_paths must be a list of absolute paths")
     return ServerConfig(base_url, organization, timeout_ms, headers, tuple(paths))
 
@@ -360,7 +375,9 @@ def _parse_plugins(raw: dict[str, Any], config_dir: Path) -> PluginsConfig:
         "plugins",
     )
     directory = _require_str(plugins.get("directory", "./plugins"), "plugins.directory")
-    startup = _require_int(plugins.get("startup_timeout_ms", 5000), "plugins.startup_timeout_ms", 1)
+    startup = _require_int(
+        plugins.get("startup_timeout_ms", 5000), "plugins.startup_timeout_ms", 1
+    )
     workers = _require_int(plugins.get("workers", 1), "plugins.workers", 1)
     max_frame = _require_int(
         plugins.get("max_frame_bytes", 32 * 1024 * 1024), "plugins.max_frame_bytes", 1
@@ -379,9 +396,7 @@ def _parse_plugins(raw: dict[str, Any], config_dir: Path) -> PluginsConfig:
     for index, raw_entry in enumerate(raw_entries):
         where = f"plugins.entries[{index}]"
         entry = _require_mapping(raw_entry, where)
-        _check_keys(
-            entry, {"id", "manifest", "required", "config", "artifact"}, where
-        )
+        _check_keys(entry, {"id", "manifest", "required", "config", "artifact"}, where)
         entry_id = _require_str(entry.get("id"), f"{where}.id")
         if entry_id in entries:
             raise ConfigError(f"{where}: duplicate plugin id {entry_id!r}")
@@ -401,10 +416,14 @@ def _parse_plugins(raw: dict[str, Any], config_dir: Path) -> PluginsConfig:
         command = manifest.get("command")
         if isinstance(command, str):
             command = [command]
-        if not isinstance(command, list) or not command or any(
-            not isinstance(part, str) for part in command
+        if (
+            not isinstance(command, list)
+            or not command
+            or any(not isinstance(part, str) for part in command)
         ):
-            raise ConfigError(f"{where}: manifest must declare command as a string or list")
+            raise ConfigError(
+                f"{where}: manifest must declare command as a string or list"
+            )
         cwd_value = manifest.get("cwd", ".")
         cwd = (manifest_path.parent / _require_str(cwd_value, f"{where}.cwd")).resolve()
         env_raw = _require_mapping(manifest.get("env"), f"{where}.env")
@@ -432,7 +451,9 @@ def _parse_plugins(raw: dict[str, Any], config_dir: Path) -> PluginsConfig:
     )
 
 
-def _parse_pipeline(raw: dict[str, Any], entries: dict[str, PluginEntry]) -> PipelineConfig:
+def _parse_pipeline(
+    raw: dict[str, Any], entries: dict[str, PluginEntry]
+) -> PipelineConfig:
     pipeline = _require_mapping(raw.get("pipeline"), "pipeline")
     _check_keys(pipeline, {"server_bound", "client_bound", "repair"}, "pipeline")
     seen_stage_ids: set[str] = set()
@@ -471,7 +492,11 @@ def _parse_pipeline(raw: dict[str, Any], entries: dict[str, PluginEntry]) -> Pip
                 )
 
     repair_raw = _require_mapping(pipeline.get("repair"), "pipeline.repair")
-    _check_keys(repair_raw, {"max_attempts", "on_exhaustion", "total_timeout_ms"}, "pipeline.repair")
+    _check_keys(
+        repair_raw,
+        {"max_attempts", "on_exhaustion", "total_timeout_ms"},
+        "pipeline.repair",
+    )
     repair = RepairConfig(
         max_attempts=_require_int(
             repair_raw.get("max_attempts", 2), "pipeline.repair.max_attempts", 0
@@ -482,7 +507,9 @@ def _parse_pipeline(raw: dict[str, Any], entries: dict[str, PluginEntry]) -> Pip
         ),
     )
     if repair.on_exhaustion not in {"violation", "http_502"}:
-        raise ConfigError("pipeline.repair.on_exhaustion must be 'violation' or 'http_502'")
+        raise ConfigError(
+            "pipeline.repair.on_exhaustion must be 'violation' or 'http_502'"
+        )
     return PipelineConfig(parsed["server_bound"], parsed["client_bound"], repair)
 
 

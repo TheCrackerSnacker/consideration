@@ -123,7 +123,10 @@ class App:
                 )
         except Exception:
             terminal = host_failure(
-                request_id, "internal", "Internal host error.", error_type="consideration_internal"
+                request_id,
+                "internal",
+                "Internal host error.",
+                error_type="consideration_internal",
             )
             response = self._terminal_response(terminal, request_id, 0)
             record = {
@@ -166,7 +169,9 @@ class App:
             raw = request.body.decode("utf-8")
             body = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            terminal = request_error(request_id, f"Request body is not valid JSON: {exc}")
+            terminal = request_error(
+                request_id, f"Request body is not valid JSON: {exc}"
+            )
             return self._terminal_response(terminal, request_id, 0), self._record(
                 request_id, started_at, started, False
             )
@@ -209,9 +214,7 @@ class App:
         state = StateStore()
 
         # 4-5: server-bound pipeline.
-        server_result = self.runner.run(
-            "server_bound", envelope, request_id, 0, state
-        )
+        server_result = self.runner.run("server_bound", envelope, request_id, 0, state)
         record["direction_results"]["server_bound"] = server_result.journal()
         record["state_writes"].extend(
             write.journal() for write in server_result.state_writes
@@ -262,7 +265,9 @@ class App:
         )
         record["server"]["requests"].append(self._server_entry(0, call))
         if self.config.journal.include_bodies and call.body is not None:
-            bodies.setdefault("server_responses", []).append(self._body_entry(call.body))
+            bodies.setdefault("server_responses", []).append(
+                self._body_entry(call.body)
+            )
         if call.terminal is not None:
             return self._terminal_response(call.terminal, request_id, 0), record
 

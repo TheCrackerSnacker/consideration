@@ -40,7 +40,12 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(body["consideration"]["violations"], [VIOLATION])
 
     def test_exhaustion_violation(self):
-        repair = {"attempts": 2, "max_attempts": 2, "exhausted": True, "cause": "violation"}
+        repair = {
+            "attempts": 2,
+            "max_attempts": 2,
+            "exhausted": True,
+            "cause": "violation",
+        }
         terminal = exhaustion_terminal("req_1", [VIOLATION], repair, "violation")
         body = json.loads(terminal.body_bytes())
         self.assertEqual(terminal.status, 400)
@@ -48,7 +53,12 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(body["consideration"]["repair"], repair)
 
     def test_exhaustion_http_502(self):
-        repair = {"attempts": 2, "max_attempts": 2, "exhausted": True, "cause": "violation"}
+        repair = {
+            "attempts": 2,
+            "max_attempts": 2,
+            "exhausted": True,
+            "cause": "violation",
+        }
         terminal = exhaustion_terminal("req_1", [VIOLATION], repair, "http_502")
         body = json.loads(terminal.body_bytes())
         self.assertEqual(terminal.status, 502)
@@ -62,7 +72,9 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(body["consideration"]["violations"], [VIOLATION])
 
     def test_host_failure_has_no_violations(self):
-        terminal = host_failure("req_1", "plugin_timeout", "Stage x failed: timeout", "client_bound")
+        terminal = host_failure(
+            "req_1", "plugin_timeout", "Stage x failed: timeout", "client_bound"
+        )
         body = json.loads(terminal.body_bytes())
         self.assertEqual(terminal.status, 500)
         self.assertEqual(body["error"]["type"], "consideration_plugin_error")
@@ -79,7 +91,10 @@ class TerminalTests(unittest.TestCase):
 
     def test_server_failure_status(self):
         self.assertEqual(
-            server_failure("req_1", "server_unreachable", "Server did not respond.").status, 502
+            server_failure(
+                "req_1", "server_unreachable", "Server did not respond."
+            ).status,
+            502,
         )
         self.assertEqual(
             server_failure("req_1", "server_timeout", "Server timed out.").status, 504
@@ -97,7 +112,9 @@ class TerminalTests(unittest.TestCase):
 
     def test_passthrough_error_is_verbatim(self):
         raw = b'{"error":{"message":"nope","type":"invalid_request_error","code":"x"}}'
-        terminal = passthrough_error("req_1", 401, raw, {"content-type": "application/json"})
+        terminal = passthrough_error(
+            "req_1", 401, raw, {"content-type": "application/json"}
+        )
         self.assertEqual(terminal.status, 401)
         self.assertEqual(terminal.body_bytes(), raw)
         self.assertIsNone(terminal.host_code)

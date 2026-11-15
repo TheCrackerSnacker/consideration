@@ -21,9 +21,8 @@ class Journal:
             return
         path = Path(self.config.path)
         path.mkdir(parents=True, exist_ok=True)
-        day = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+        day = _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%d")
         target = path / f"journal-{day}.jsonl"
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-        with self._lock:
-            with target.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
+        with self._lock, target.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")

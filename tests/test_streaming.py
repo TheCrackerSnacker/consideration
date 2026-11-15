@@ -13,7 +13,10 @@ BODY = {
     "choices": [
         {
             "index": 0,
-            "message": {"role": "assistant", "content": "Recursion is a function that calls itself."},
+            "message": {
+                "role": "assistant",
+                "content": "Recursion is a function that calls itself.",
+            },
             "finish_reason": "stop",
         }
     ],
@@ -35,7 +38,9 @@ class StreamingTests(unittest.TestCase):
     def test_chunk_sequence(self):
         chunks = parse(synthesize_sse(BODY))
         self.assertEqual(len(chunks), 4)
-        self.assertEqual(chunks[0]["choices"][0]["delta"], {"role": "assistant", "content": ""})
+        self.assertEqual(
+            chunks[0]["choices"][0]["delta"], {"role": "assistant", "content": ""}
+        )
         self.assertEqual(
             chunks[1]["choices"][0]["delta"]["content"],
             "Recursion is a function that calls itself.",
@@ -73,7 +78,9 @@ class StreamingTests(unittest.TestCase):
             ],
         }
         chunks = parse(synthesize_sse(body))
-        self.assertEqual(chunks[1]["choices"][0]["delta"]["tool_calls"], [{"id": "call_1"}])
+        self.assertEqual(
+            chunks[1]["choices"][0]["delta"]["tool_calls"], [{"id": "call_1"}]
+        )
         self.assertEqual(chunks[1]["choices"][0]["delta"]["content"], "")
         self.assertEqual(chunks[2]["choices"][0]["finish_reason"], "tool_calls")
 
@@ -87,7 +94,10 @@ class StreamingTests(unittest.TestCase):
                     "index": 0,
                     "message": {
                         "role": "assistant",
-                        "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}],
+                        "content": [
+                            {"type": "text", "text": "a"},
+                            {"type": "text", "text": "b"},
+                        ],
                     },
                     "finish_reason": "stop",
                 }

@@ -126,7 +126,9 @@ class RepairTests(unittest.TestCase):
         request = build_repair_request(SERVER_REQUEST, rejected, [VIOLATION])
         assistant = request["messages"][1]
         self.assertIsNone(assistant["content"])
-        self.assertEqual(assistant["tool_calls"], [{"id": "call_1", "type": "function"}])
+        self.assertEqual(
+            assistant["tool_calls"], [{"id": "call_1", "type": "function"}]
+        )
 
     def test_server_request_is_not_mutated(self):
         original = json.loads(json.dumps(SERVER_REQUEST))

@@ -7,14 +7,10 @@ from consideration.patch import merge_patch
 
 class MergePatchTests(unittest.TestCase):
     def test_rfc7386_object_replacement(self):
-        self.assertEqual(
-            merge_patch({"a": "b"}, {"a": "c"}), {"a": "c"}
-        )
+        self.assertEqual(merge_patch({"a": "b"}, {"a": "c"}), {"a": "c"})
 
     def test_rfc7386_remove(self):
-        self.assertEqual(
-            merge_patch({"a": "b", "c": "d"}, {"a": None}), {"c": "d"}
-        )
+        self.assertEqual(merge_patch({"a": "b", "c": "d"}, {"a": None}), {"c": "d"})
 
     def test_rfc7386_nested(self):
         target = {"a": {"b": "c", "d": "e", "f": "g"}}

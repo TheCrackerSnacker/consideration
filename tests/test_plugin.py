@@ -50,7 +50,9 @@ class PluginLifecycleTests(unittest.TestCase):
         self.assertEqual(self.hook(manager), {"action": "continue"})
 
     def test_timeout(self):
-        manager = self.manager(plugin_config={"mode": "sleep", "delay_ms": 400}, timeout_ms=100)
+        manager = self.manager(
+            plugin_config={"mode": "sleep", "delay_ms": 400}, timeout_ms=100
+        )
         started = time.monotonic()
         with self.assertRaises(PluginTimeout):
             self.hook(manager, timeout_ms=100)
@@ -70,7 +72,9 @@ class PluginLifecycleTests(unittest.TestCase):
         manager = self.manager(
             plugin_config={"mode": "patch", "patch": {"messages": []}}
         )
-        self.assertEqual(self.hook(manager), {"action": "patch", "patch": {"messages": []}})
+        self.assertEqual(
+            self.hook(manager), {"action": "patch", "patch": {"messages": []}}
+        )
 
     def test_restart_after_crash_does_not_hang(self):
         manager = self.manager(plugin_config={"mode": "crash"})

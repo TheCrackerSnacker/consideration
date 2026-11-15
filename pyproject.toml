@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "consideration"
 version = "0.1.0"
-description = "OpenAI-compatible passthrough proxy with server-bound and client-bound plugin pipelines"
+description = "A plugin based OpenAI compatible endpoint proxy."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -14,8 +14,21 @@ dependencies = []
 [project.scripts]
 consideration = "consideration.server:main"
 
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
 [tool.setuptools]
 packages = ["consideration"]
 
 [tool.setuptools.package-data]
 consideration = ["py.typed"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.5",
+]

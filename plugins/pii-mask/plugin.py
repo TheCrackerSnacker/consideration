@@ -8,8 +8,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from common import serve
 
-
-DEFAULT_PATTERNS = [r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", r"\b\d{3}[-.]\d{3}[-.]\d{4}\b"]
+DEFAULT_PATTERNS = [
+    r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
+    r"\b\d{3}[-.]\d{3}[-.]\d{4}\b",
+]
 
 
 def token(value: str) -> str:
@@ -20,7 +22,15 @@ def token(value: str) -> str:
 
 def transform_text(text: str, patterns, replacements):
     for pattern in patterns:
-        text = re.sub(pattern, lambda match: replacements.setdefault(token(match.group(0)), match.group(0)) and token(match.group(0)), text, flags=re.IGNORECASE)
+        text = re.sub(
+            pattern,
+            lambda match: (
+                replacements.setdefault(token(match.group(0)), match.group(0))
+                and token(match.group(0))
+            ),
+            text,
+            flags=re.IGNORECASE,
+        )
     return text
 
 
@@ -34,8 +44,14 @@ def handler(params, config):
     if direction == "server_bound":
         for message in body.get("messages", []):
             if isinstance(message.get("content"), str):
-                message["content"] = transform_text(message["content"], patterns, mapping)
-        return {"action": "replace", "body": body, "state": {"set": {"entities": mapping}}}
+                message["content"] = transform_text(
+                    message["content"], patterns, mapping
+                )
+        return {
+            "action": "replace",
+            "body": body,
+            "state": {"set": {"entities": mapping}},
+        }
     if direction == "client_bound":
         reverse = {placeholder: value for placeholder, value in mapping.items()}
         for choice in body.get("choices", []):
@@ -47,4 +63,8 @@ def handler(params, config):
     return {"action": "continue"}
 
 
-serve("acme/pii-mask", {"server_bound": ["request"], "client_bound": ["response"]}, handler)
+serve(
+    "acme/pii-mask",
+    {"server_bound": ["request"], "client_bound": ["response"]},
+    handler,
+)

@@ -23,7 +23,11 @@ RESPONSE = {
         "created": 1,
         "model": "gpt-x",
         "choices": [
-            {"index": 0, "message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "hello"},
+                "finish_reason": "stop",
+            }
         ],
     },
     "meta": {"request_id": "req_test", "direction": "client_bound"},
@@ -48,7 +52,14 @@ class PipelineTests(unittest.TestCase):
         self.managers.append(manager)
         return PipelineRunner(config, manager, telemetry=None)
 
-    def pipeline_run(self, runner, direction="server_bound", attempt=0, store=None, server_request=None):
+    def pipeline_run(
+        self,
+        runner,
+        direction="server_bound",
+        attempt=0,
+        store=None,
+        server_request=None,
+    ):
         envelope = REQUEST if direction == "server_bound" else RESPONSE
         return runner.run(
             direction,
@@ -68,7 +79,10 @@ class PipelineTests(unittest.TestCase):
 
     def test_patch(self):
         runner = self.runner(
-            plugin_config={"mode": "patch", "patch": {"messages": [{"role": "user", "content": "x"}]}}
+            plugin_config={
+                "mode": "patch",
+                "patch": {"messages": [{"role": "user", "content": "x"}]},
+            }
         )
         result = self.pipeline_run(runner)
         self.assertIsNone(result.terminal)
@@ -88,7 +102,9 @@ class PipelineTests(unittest.TestCase):
             "message": "Output contains an em dash.",
             "retryable": True,
         }
-        runner = self.runner(plugin_config={"mode": "terminate", "violations": [violation]})
+        runner = self.runner(
+            plugin_config={"mode": "terminate", "violations": [violation]}
+        )
         result = self.pipeline_run(runner, "client_bound")
         self.assertIsNotNone(result.terminal)
         assert result.terminal is not None
@@ -110,7 +126,9 @@ class PipelineTests(unittest.TestCase):
 
     def test_invalid_replacement_structure(self):
         result = self.pipeline_run(
-            self.runner(plugin_config={"mode": "replace", "body": {"model": "", "messages": []}})
+            self.runner(
+                plugin_config={"mode": "replace", "body": {"model": "", "messages": []}}
+            )
         )
         self.assertEqual(result.terminal.error["code"], "plugin_invalid_output")
 
@@ -146,7 +164,10 @@ class PipelineTests(unittest.TestCase):
 
     def test_state_is_visible_across_pipelines(self):
         runner = self.runner(
-            plugin_config={"mode": "state_patch", "state_set": {"map": {"[[P1]]": "John"}}}
+            plugin_config={
+                "mode": "state_patch",
+                "state_set": {"map": {"[[P1]]": "John"}},
+            }
         )
         store = StateStore()
         server = self.pipeline_run(runner, "server_bound", store=store)
@@ -158,7 +179,9 @@ class PipelineTests(unittest.TestCase):
             server_request=REQUEST["body"],
         )
         self.assertIsNone(client.terminal)
-        self.assertEqual(client.envelope["body"]["x_state"], {"map": {"[[P1]]": "John"}})
+        self.assertEqual(
+            client.envelope["body"]["x_state"], {"map": {"[[P1]]": "John"}}
+        )
 
     def test_rejected_attempt_discards_writes(self):
         violation = {
@@ -194,7 +217,10 @@ class PipelineTests(unittest.TestCase):
 
     def test_state_limits_surface_as_invalid_output(self):
         runner = self.runner(
-            plugin_config={"mode": "continue", "state_set": {f"k{i}": i for i in range(300)}}
+            plugin_config={
+                "mode": "continue",
+                "state_set": {f"k{i}": i for i in range(300)},
+            }
         )
         result = self.pipeline_run(runner)
         self.assertEqual(result.terminal.error["code"], "plugin_invalid_output")

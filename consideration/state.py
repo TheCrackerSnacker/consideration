@@ -18,16 +18,22 @@ class StateStore:
         self._data: dict[str, dict[str, Any]] = {}
 
     def snapshot(self) -> dict[str, dict[str, Any]]:
-        return {namespace: deep_copy(values) for namespace, values in self._data.items()}
+        return {
+            namespace: deep_copy(values) for namespace, values in self._data.items()
+        }
 
     def commit(self, staged: dict[str, dict[str, Any]]) -> None:
-        self._data = {namespace: deep_copy(values) for namespace, values in staged.items()}
+        self._data = {
+            namespace: deep_copy(values) for namespace, values in staged.items()
+        }
 
     def get(self, namespace: str) -> dict[str, Any]:
         return deep_copy(self._data.get(namespace, {}))
 
 
-def apply_writes(scope: dict[str, Any], writes: Any) -> tuple[dict[str, Any], list[str]]:
+def apply_writes(
+    scope: dict[str, Any], writes: Any
+) -> tuple[dict[str, Any], list[str]]:
     """Validate and apply a hook result's state block to one plugin namespace."""
     if writes is None:
         return deep_copy(scope), []
@@ -46,7 +52,9 @@ def apply_writes(scope: dict[str, Any], writes: Any) -> tuple[dict[str, Any], li
         raise InvalidResult("state.set must be an object")
     if delete_values is None:
         delete_values = []
-    if not isinstance(delete_values, list) or any(not isinstance(k, str) for k in delete_values):
+    if not isinstance(delete_values, list) or any(
+        not isinstance(k, str) for k in delete_values
+    ):
         raise InvalidResult("state.delete must be a list of strings")
     for key, value in set_values.items():
         if not isinstance(key, str) or not key:

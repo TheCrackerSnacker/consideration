@@ -33,7 +33,13 @@ def serve(plugin_id, hooks, handler):
         method = frame.get("method")
         request_id = frame.get("id")
         if method == "plugin/describe":
-            result = {"id": plugin_id, "version": "0.1.0", "contract": "0.1", "hooks": hooks, "read_only": False}
+            result = {
+                "id": plugin_id,
+                "version": "0.1.0",
+                "contract": "0.1",
+                "hooks": hooks,
+                "read_only": False,
+            }
         elif method == "plugin/init":
             config = (frame.get("params") or {}).get("config") or {}
             result = {"ok": True}
@@ -46,6 +52,12 @@ def serve(plugin_id, hooks, handler):
         elif method == "hook":
             result = handler(frame.get("params") or {}, config)
         else:
-            write_frame({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "method not found"}})
+            write_frame(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32601, "message": "method not found"},
+                }
+            )
             continue
         write_frame({"jsonrpc": "2.0", "id": request_id, "result": result})

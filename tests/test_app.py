@@ -294,7 +294,9 @@ class AppTests(SubsetAssertions, unittest.TestCase):
             body["error"]["message"],
             "Client-bound validation failed after 1 repair attempts.",
         )
-        self.assertEqual(body["consideration"]["violations"][0]["code"], VIOLATION["code"])
+        self.assertEqual(
+            body["consideration"]["violations"][0]["code"], VIOLATION["code"]
+        )
         self.assertEqual(response.headers["x-consideration-code"], "repair_exhausted")
         self.assertEqual(len(upstream.calls), 2)
 
@@ -385,7 +387,9 @@ class AppTests(SubsetAssertions, unittest.TestCase):
         self.assertEqual(response.status, 200)
         journal = self._read_journal()
         self.assertEqual(len(journal["direction_results"]["server_bound"]["stages"]), 1)
-        self.assertEqual(len(journal["direction_results"]["client_bound"]["attempts"]), 2)
+        self.assertEqual(
+            len(journal["direction_results"]["client_bound"]["attempts"]), 2
+        )
         self.assertFalse(journal["repairs"][0]["server_bound_rerun"])
 
     # -- server failures ----------------------------------------------
@@ -648,7 +652,10 @@ class AppTests(SubsetAssertions, unittest.TestCase):
                 "violations": [VIOLATION],
             },
             repair={"max_attempts": 2},
-            responses=[json_response(chat_body("bad")), json_response(chat_body("good"))],
+            responses=[
+                json_response(chat_body("bad")),
+                json_response(chat_body("good")),
+            ],
             extra="journal:\n  include_bodies: true\n",
         )
         self.post(app)

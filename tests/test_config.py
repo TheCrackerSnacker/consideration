@@ -38,7 +38,9 @@ class ConfigTests(unittest.TestCase):
         write_plugin(self.root)
         path = self.root / "config.yaml"
         path.write_text(
-            config_text().replace("      hook: request\n", "      hook: request\n      nope: 1\n"),
+            config_text().replace(
+                "      hook: request\n", "      hook: request\n      nope: 1\n"
+            ),
             encoding="utf-8",
         )
         with self.assertRaises(ConfigError):
@@ -161,7 +163,9 @@ class ConfigTests(unittest.TestCase):
         write_plugin(self.root)
         path = self.root / "config.yaml"
         path.write_text(
-            config_text(extra="journal:\n  include_bodies: true\n  state_values: plaintext\n"),
+            config_text(
+                extra="journal:\n  include_bodies: true\n  state_values: plaintext\n"
+            ),
             encoding="utf-8",
         )
         with self.assertRaises(ConfigError):
@@ -170,9 +174,7 @@ class ConfigTests(unittest.TestCase):
     def test_fail_verdict_requires_violations(self):
         write_plugin(self.root)
         path = self.root / "config.yaml"
-        path.write_text(
-            config_text(on_error="fail_verdict"), encoding="utf-8"
-        )
+        path.write_text(config_text(on_error="fail_verdict"), encoding="utf-8")
         with self.assertRaises(ConfigError):
             load_config(path)
 

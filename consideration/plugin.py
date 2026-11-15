@@ -155,7 +155,9 @@ class PluginInstance:
             self._threads.append(stderr_thread)
 
         try:
-            described = self._request("plugin/describe", {}, self.config.plugins.startup_timeout_ms)
+            described = self._request(
+                "plugin/describe", {}, self.config.plugins.startup_timeout_ms
+            )
         except StageFailure:
             _kill_process_tree(proc)
             raise
@@ -168,7 +170,9 @@ class PluginInstance:
                 f"plugin/describe id {described.get('id')!r} does not match {self.entry.id!r}"
             )
         contract = described.get("contract")
-        if not isinstance(contract, str) or not contract_compatible(CONTRACT_VERSION, contract):
+        if not isinstance(contract, str) or not contract_compatible(
+            CONTRACT_VERSION, contract
+        ):
             _kill_process_tree(proc)
             raise PluginProtocolError(
                 f"plugin contract {contract!r} is incompatible with {CONTRACT_VERSION}"
@@ -198,7 +202,12 @@ class PluginInstance:
             self.ready = True
             self._restart_failures = 0
             self._circuit_until = 0.0
-        self._emit("plugin.lifecycle", action="ready", plugin=self.entry.id, version=self.version)
+        self._emit(
+            "plugin.lifecycle",
+            action="ready",
+            plugin=self.entry.id,
+            version=self.version,
+        )
 
     def _start_health_thread(self) -> None:
         thread = threading.Thread(
@@ -216,7 +225,9 @@ class PluginInstance:
                 continue
             with self._lock:
                 circuit_open = time.monotonic() < self._circuit_until
-                alive = self._alive and self._proc is not None and self._proc.poll() is None
+                alive = (
+                    self._alive and self._proc is not None and self._proc.poll() is None
+                )
             if circuit_open:
                 continue
             if not alive:
@@ -241,7 +252,9 @@ class PluginInstance:
                 if failures >= 3:
                     with self._lock:
                         self._unhealthy = True
-                    self._emit("plugin.lifecycle", action="unhealthy", plugin=self.entry.id)
+                    self._emit(
+                        "plugin.lifecycle", action="unhealthy", plugin=self.entry.id
+                    )
                     proc = self._proc
                     if proc is not None:
                         _kill_process_tree(proc)
@@ -326,7 +339,12 @@ class PluginInstance:
                         raise PluginCrash("plugin process is not running")
                     write_frame(
                         proc.stdin,
-                        {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+                        {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "method": method,
+                            "params": params,
+                        },
                     )
             except (BrokenPipeError, OSError) as exc:
                 with self._lock:
@@ -347,7 +365,9 @@ class PluginInstance:
                 message = error.get("message", "plugin returned a JSON-RPC error")
                 raise PluginProtocolError(str(message))
             if "result" not in response:
-                raise PluginProtocolError("plugin response has neither result nor error")
+                raise PluginProtocolError(
+                    "plugin response has neither result nor error"
+                )
             return response["result"]
         finally:
             self._slots.release()
@@ -359,7 +379,11 @@ class PluginInstance:
                 if proc is not None and proc.stdin is not None and proc.poll() is None:
                     write_frame(
                         proc.stdin,
-                        {"jsonrpc": "2.0", "method": "$/cancel", "params": {"id": request_id}},
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "$/cancel",
+                            "params": {"id": request_id},
+                        },
                     )
         except Exception:
             pass
@@ -415,13 +439,20 @@ class PluginInstance:
             try:
                 with self._write_lock:
                     proc = self._proc
-                    if proc is not None and proc.stdin is not None and proc.poll() is None:
+                    if (
+                        proc is not None
+                        and proc.stdin is not None
+                        and proc.poll() is None
+                    ):
                         write_frame(
                             proc.stdin,
                             {
                                 "jsonrpc": "2.0",
                                 "id": request_id,
-                                "error": {"code": -32601, "message": "method not found"},
+                                "error": {
+                                    "code": -32601,
+                                    "message": "method not found",
+                                },
                             },
                         )
             except Exception:
@@ -457,7 +488,12 @@ class PluginInstance:
                         return
                 line = raw.decode("utf-8", errors="replace").rstrip()
                 if line:
-                    self._emit("plugin.log", plugin=self.entry.id, level="stderr", message=line[:4096])
+                    self._emit(
+                        "plugin.log",
+                        plugin=self.entry.id,
+                        level="stderr",
+                        message=line[:4096],
+                    )
         except Exception:
             return
         finally:
@@ -486,7 +522,12 @@ class PluginInstance:
                     try:
                         write_frame(
                             proc.stdin,
-                            {"jsonrpc": "2.0", "id": 0, "method": "plugin/shutdown", "params": {}},
+                            {
+                                "jsonrpc": "2.0",
+                                "id": 0,
+                                "method": "plugin/shutdown",
+                                "params": {},
+                            },
                         )
                     except Exception:
                         pass
@@ -495,7 +536,9 @@ class PluginInstance:
                     except Exception:
                         pass
                     try:
-                        proc.wait(timeout=self.config.plugins.shutdown_timeout_ms / 1000.0)
+                        proc.wait(
+                            timeout=self.config.plugins.shutdown_timeout_ms / 1000.0
+                        )
                     except subprocess.TimeoutExpired:
                         _kill_process_tree(proc)
                 else:
@@ -537,7 +580,9 @@ class PluginManager:
             entry = self.config.plugins.entries[entry_id]
             if entry.required:
                 self.shutdown_all()
-                raise PluginUnavailable(f"required plugin {entry_id} failed to start: {exc}")
+                raise PluginUnavailable(
+                    f"required plugin {entry_id} failed to start: {exc}"
+                )
             instance.disabled = True
             self._emit(
                 "plugin.lifecycle",

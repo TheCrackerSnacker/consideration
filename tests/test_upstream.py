@@ -4,12 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from consideration.config import load_config
 from consideration.upstream import (
     UpstreamClient,
     filter_response_headers,
     is_credential_header,
 )
-from consideration.config import load_config
 
 
 class UpstreamTests(unittest.TestCase):
@@ -20,15 +20,15 @@ class UpstreamTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def client(self, base_url: str = "http://127.0.0.1:9/v1", extra: str = "") -> UpstreamClient:
+    def client(
+        self, base_url: str = "http://127.0.0.1:9/v1", extra: str = ""
+    ) -> UpstreamClient:
         text = (
             "host:\n"
             "  listen: 127.0.0.1:0\n"
             "server:\n"
             f"  base_url: {base_url}\n"
-            "  timeout_ms: 1000\n"
-            + extra
-            + "plugins:\n"
+            "  timeout_ms: 1000\n" + extra + "plugins:\n"
             "  entries: []\n"
             "pipeline:\n"
             "  server_bound: []\n"
@@ -40,25 +40,16 @@ class UpstreamTests(unittest.TestCase):
 
     def test_target_maps_v1_once(self):
         client = self.client("http://example.test/v1")
-        self.assertEqual(
-            client.target("/v1/chat/completions"), "/v1/chat/completions"
-        )
+        self.assertEqual(client.target("/v1/chat/completions"), "/v1/chat/completions")
         self.assertEqual(client.target("/v1/models"), "/v1/models")
         self.assertEqual(client.target("/health"), "/v1/health")
 
     def test_target_without_base_path(self):
         client = self.client("http://example.test")
-        self.assertEqual(
-            client.target("/v1/chat/completions"), "/v1/chat/completions"
-        )
+        self.assertEqual(client.target("/v1/chat/completions"), "/v1/chat/completions")
 
     def test_prepare_headers_filters_and_forwards(self):
-        client = self.client(
-            extra=(
-                "  headers:\n"
-                "    x-custom: server\n"
-            )
-        )
+        client = self.client(extra=("  headers:\n    x-custom: server\n"))
         headers = client.prepare_headers(
             {
                 "Content-Type": "application/json",

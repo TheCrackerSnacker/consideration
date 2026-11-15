@@ -29,7 +29,9 @@ pipeline:
 
     def test_flow_sequence_and_mapping(self):
         value = loads('config: {"banned": ["\\u2014", "x"], "ok": true, "n": null}\n')
-        self.assertEqual(value["config"], {"banned": ["\u2014", "x"], "ok": True, "n": None})
+        self.assertEqual(
+            value["config"], {"banned": ["\u2014", "x"], "ok": True, "n": None}
+        )
 
     def test_comments_outside_quotes(self):
         value = loads('a: "x # y"  # trailing\nb: z#not-a-comment\n')

@@ -9,11 +9,12 @@
 
 ## Bootstrap and commands
 
-- Requires Python `>=3.11`; runtime dependencies are empty and there is no pytest, lint, or formatter configuration.
+- Requires Python `>=3.11`; runtime dependencies are empty. Ruff is configured in `pyproject.toml` for linting and formatting.
 - Run the complete suite from the repository root with:
   `python -m unittest discover -s tests -t .`
 - Run a focused test with, for example:
   `python -m unittest tests.test_app.AppTests.test_journal_replay_reproduces_repairs -v`
+- Run `ruff check .` and `ruff format --check .`; use `ruff format .` to apply formatting fixes.
 - Compile-check the tree with `python -m compileall -q consideration plugins tests`; use `git diff --check` for whitespace validation.
 - The example config resolves `env:OPENAI_BASE_URL`; set it before checking or starting it (PowerShell: `$env:OPENAI_BASE_URL='https://api.openai.com/v1'`).
 - Validate or start the proxy with `python -m consideration --config examples/config.yaml --check` or `python -m consideration --config examples/config.yaml`.

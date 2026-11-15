@@ -47,7 +47,9 @@ def span_excerpt(body: dict[str, Any], span: dict[str, Any]) -> str | None:
     return data[start:end].decode("utf-8", errors="replace")
 
 
-def render_instruction(rejected_body: dict[str, Any], violations: list[dict[str, Any]]) -> str:
+def render_instruction(
+    rejected_body: dict[str, Any], violations: list[dict[str, Any]]
+) -> str:
     lines = ["Your previous response was rejected by policy.", "", "Violations:"]
     for violation in violations:
         lines.append(

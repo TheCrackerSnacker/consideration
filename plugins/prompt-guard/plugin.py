@@ -18,16 +18,27 @@ def handler(params, config):
         for pattern in patterns:
             match = re.search(pattern, content, re.IGNORECASE)
             if match:
-                start = len(content[:match.start()].encode("utf-8"))
-                end = len(content[:match.end()].encode("utf-8"))
-                return {"action": "terminate", "violations": [{
-                    "code": "security.prompt_injection",
-                    "severity": "critical",
-                    "message": "Prompt contains a suspected instruction injection.",
-                    "hint": "Remove the injected instruction and try again.",
-                    "retryable": False,
-                    "spans": [{"path": f"/messages/{body['messages'].index(message)}/content", "start": start, "end": end}],
-                }]}
+                start = len(content[: match.start()].encode("utf-8"))
+                end = len(content[: match.end()].encode("utf-8"))
+                return {
+                    "action": "terminate",
+                    "violations": [
+                        {
+                            "code": "security.prompt_injection",
+                            "severity": "critical",
+                            "message": "Prompt contains a suspected instruction injection.",
+                            "hint": "Remove the injected instruction and try again.",
+                            "retryable": False,
+                            "spans": [
+                                {
+                                    "path": f"/messages/{body['messages'].index(message)}/content",
+                                    "start": start,
+                                    "end": end,
+                                }
+                            ],
+                        }
+                    ],
+                }
     return {"action": "continue"}
 
 

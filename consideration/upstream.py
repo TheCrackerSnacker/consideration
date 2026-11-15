@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import fnmatch
 import http.client
-import socket
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 from .config import Config
@@ -126,7 +125,7 @@ class UpstreamClient:
         try:
             connection.request(method, self.target(path), body=body, headers=headers)
             response = connection.getresponse()
-        except (socket.timeout, TimeoutError) as exc:
+        except TimeoutError as exc:
             connection.close()
             raise UpstreamTimeout(str(exc)) from exc
         except (OSError, http.client.HTTPException) as exc:
@@ -142,12 +141,14 @@ class UpstreamClient:
         body: bytes | None,
         timeout_ms: int,
     ) -> UpstreamResponse:
-        headers = self.prepare_headers(client_headers, len(body) if body is not None else None)
+        headers = self.prepare_headers(
+            client_headers, len(body) if body is not None else None
+        )
         connection, response = self.open(method, path, headers, body, timeout_ms)
         try:
             try:
                 data = response.read()
-            except (socket.timeout, TimeoutError) as exc:
+            except TimeoutError as exc:
                 raise UpstreamTimeout(str(exc)) from exc
             except (OSError, http.client.HTTPException) as exc:
                 raise UpstreamUnreachable(str(exc)) from exc
@@ -173,7 +174,7 @@ def iter_response(response: http.client.HTTPResponse, chunk_size: int = 8192):
             if not data:
                 break
             yield data
-    except (socket.timeout, TimeoutError):
+    except TimeoutError:
         return
     except (OSError, http.client.HTTPException):
         return

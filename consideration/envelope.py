@@ -22,7 +22,9 @@ def validate_chat_request(body: Any) -> None:
         raise RequestError("messages must be an array")
     for index, message in enumerate(messages):
         if not isinstance(message, dict) or not isinstance(message.get("role"), str):
-            raise RequestError(f"messages[{index}] must be an object with a string role")
+            raise RequestError(
+                f"messages[{index}] must be an object with a string role"
+            )
 
 
 def validate_chat_response(body: Any) -> None:

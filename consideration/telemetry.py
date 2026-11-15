@@ -25,6 +25,5 @@ class Telemetry:
             path = Path(exporter["path"])
             path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-            with self._lock:
-                with path.open("a", encoding="utf-8") as handle:
-                    handle.write(line + "\n")
+            with self._lock, path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")

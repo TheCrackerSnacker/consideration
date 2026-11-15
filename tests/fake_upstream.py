@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any
 
 from consideration.upstream import UpstreamResponse
 from consideration.util import dumps
@@ -31,9 +31,7 @@ def json_response(
     body: dict[str, Any] | None = None, status: int = 200
 ) -> UpstreamResponse:
     payload = dumps(body if body is not None else chat_body()).encode("utf-8")
-    return UpstreamResponse(
-        status, [("content-type", "application/json")], payload
-    )
+    return UpstreamResponse(status, [("content-type", "application/json")], payload)
 
 
 def raw_response(

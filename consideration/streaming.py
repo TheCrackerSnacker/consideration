@@ -46,9 +46,7 @@ def synthesize_sse(body: dict[str, Any], include_usage: bool = False) -> bytes:
     if message.get("tool_calls"):
         delta["tool_calls"] = message["tool_calls"]
     content_chunk = dict(base)
-    content_chunk["choices"] = [
-        {"index": 0, "delta": delta, "finish_reason": None}
-    ]
+    content_chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
     closing = dict(base)
     closing["choices"] = [
         {
@@ -67,8 +65,12 @@ def synthesize_sse(body: dict[str, Any], include_usage: bool = False) -> bytes:
 
     output = bytearray()
     for chunk in chunks:
-        output += b"data: " + json.dumps(
-            chunk, ensure_ascii=False, separators=(",", ":")
-        ).encode("utf-8") + b"\n\n"
+        output += (
+            b"data: "
+            + json.dumps(chunk, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
+            + b"\n\n"
+        )
     output += b"data: [DONE]\n\n"
     return bytes(output)

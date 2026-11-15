@@ -11,12 +11,20 @@ from .envelope import validate_body
 from .errors import InvalidResult, InvalidStageOutput, StageFailure
 from .patch import merge_patch
 from .plugin import PluginManager
-from .state import StateStore, apply_writes, state_value
+from .state import StateStore, apply_writes
 from .terminal import Terminal, plugin_failure, policy_terminal
 from .util import deep_copy, json_hash
 
 SEVERITIES = {"info", "warning", "error", "critical"}
-VIOLATION_KEYS = {"code", "severity", "message", "hint", "retryable", "spans", "details"}
+VIOLATION_KEYS = {
+    "code",
+    "severity",
+    "message",
+    "hint",
+    "retryable",
+    "spans",
+    "details",
+}
 
 
 @dataclass
@@ -95,7 +103,11 @@ class PipelineResult:
 
 
 def enrich_violation(stage: StageConfig, violation: dict[str, Any]) -> dict[str, Any]:
-    clean = {key: deep_copy(value) for key, value in violation.items() if key in VIOLATION_KEYS}
+    clean = {
+        key: deep_copy(value)
+        for key, value in violation.items()
+        if key in VIOLATION_KEYS
+    }
     enriched = {
         "plugin": stage.plugin,
         "plugin_version": stage.plugin_version,
@@ -314,13 +326,17 @@ class PipelineRunner:
         raw: Any,
         before: dict[str, Any],
         scope: dict[str, Any],
-    ) -> tuple[str, dict[str, Any], list[dict[str, Any]], Any, dict[str, Any], list[str]]:
+    ) -> tuple[
+        str, dict[str, Any], list[dict[str, Any]], Any, dict[str, Any], list[str]
+    ]:
         if not isinstance(raw, dict):
             raise InvalidResult("hook result must be an object")
         allowed = {"action", "patch", "body", "state", "violations"}
         unknown = set(raw) - allowed
         if unknown:
-            raise InvalidResult(f"hook result has unknown key(s): {', '.join(sorted(unknown))}")
+            raise InvalidResult(
+                f"hook result has unknown key(s): {', '.join(sorted(unknown))}"
+            )
         action = raw.get("action")
         if action not in {"continue", "patch", "replace", "terminate"}:
             raise InvalidResult("action must be continue, patch, replace, or terminate")
@@ -401,9 +417,7 @@ class PipelineRunner:
                 enrich_violation(stage, validate_violation(value))
                 for value in stage.fallback_violations
             ]
-            return policy_terminal(
-                request_id, direction, violations, kind="host_error"
-            )
+            return policy_terminal(request_id, direction, violations, kind="host_error")
         return plugin_failure(
             request_id, stage.stage_id, failure.code(), failure.kind, direction
         )

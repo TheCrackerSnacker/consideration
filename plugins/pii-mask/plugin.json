@@ -1,7 +1,7 @@
 {
   "id": "acme/pii-mask",
-  "version": "0.1.0",
-  "contract": "0.1",
+  "version": "0.2.0",
+  "contract": "0.2",
   "hooks": {"server_bound": ["request"], "client_bound": ["response"]},
   "paired": true,
   "read_only": false,

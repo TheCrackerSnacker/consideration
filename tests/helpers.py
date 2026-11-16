@@ -26,11 +26,12 @@ def write_plugin(
     }
     manifest = {
         "id": plugin_id,
-        "version": "0.1.0",
-        "contract": "0.1",
+        "version": "0.2.0",
+        "contract": "0.2",
         "hooks": hooks,
         "read_only": read_only,
         "command": command or [sys.executable, "-u", str(ECHO)],
+        "env": {"TEST_PLUGIN_READ_ONLY": str(read_only).lower()},
     }
     if paired:
         manifest["paired"] = True
@@ -121,10 +122,11 @@ def make_config(
     stage_extra: dict | None = None,
     hooks: dict | None = None,
     paired: bool = False,
+    read_only: bool = False,
     host_extra: str = "",
     base_url: str = "http://127.0.0.1:9/v1",
 ):
-    write_plugin(root, hooks=hooks, paired=paired)
+    write_plugin(root, hooks=hooks, paired=paired, read_only=read_only)
     path = root / "config.yaml"
     path.write_text(
         config_text(

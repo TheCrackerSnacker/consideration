@@ -1,14 +1,12 @@
 host:
   listen: 127.0.0.1:4000
   max_body_bytes: 33554432
+  max_transport_body_bytes: 134217728
+  read_timeout_ms: 10000
 
 server:
   base_url: env:OPENAI_BASE_URL
   timeout_ms: 120000
-  passthrough_paths:
-    - /v1/models
-    - /v1/files
-    - /v1/embeddings
 
 plugins:
   entries:

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import fnmatch
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -30,8 +30,9 @@ from .upstream import (
     UpstreamClient,
     UpstreamTimeout,
     UpstreamUnreachable,
+    filter_response_header_items,
     filter_response_headers,
-    is_credential_header,
+    redact_headers,
 )
 from .util import deep_copy, dumps, json_hash, new_request_id, now_iso, truncate_bytes
 
@@ -67,6 +68,7 @@ class Response:
     status: int
     headers: dict[str, str]
     body: bytes
+    header_items: list[tuple[str, str]] | None = None
 
 
 @dataclass
@@ -77,21 +79,6 @@ class ServerCall:
     raw: bytes | None = None
     body: dict[str, Any] | None = None
     terminal: Terminal | None = None
-
-
-def exposed_headers(config: Config, headers: dict[str, str]) -> dict[str, str]:
-    """The allowlisted, credential-free view plugins receive (6.2)."""
-    result: dict[str, str] = {}
-    for name, value in headers.items():
-        lowered = name.lower()
-        if is_credential_header(lowered):
-            continue
-        if any(
-            fnmatch.fnmatch(lowered, pattern.lower())
-            for pattern in config.header_allowlist
-        ):
-            result[lowered] = value
-    return result
 
 
 class App:
@@ -126,7 +113,15 @@ class App:
                 response, record = self._passthrough(
                     request, request_id, started_at, started
                 )
-        except Exception:
+        except Exception as exc:
+            self._emit(
+                "host.internal_error",
+                request_id=request_id,
+                error_type=type(exc).__name__,
+            )
+            logging.getLogger(__name__).error(
+                "request %s failed internally (%s)", request_id, type(exc).__name__
+            )
             terminal = host_failure(
                 request_id,
                 "internal",
@@ -144,8 +139,28 @@ class App:
         serialized_record = record.serialize(len(response.body))
         try:
             self.journal.write(serialized_record)
-        except Exception:
-            pass
+        except OSError as exc:
+            self._emit(
+                "journal.write_failed",
+                request_id=request_id,
+                error_type=type(exc).__name__,
+            )
+            logging.getLogger(__name__).error(
+                "journal write failed for request %s (%s)",
+                request_id,
+                type(exc).__name__,
+            )
+        except Exception as exc:
+            self._emit(
+                "journal.write_failed",
+                request_id=request_id,
+                error_type=type(exc).__name__,
+            )
+            logging.getLogger(__name__).error(
+                "journal write failed for request %s (%s)",
+                request_id,
+                type(exc).__name__,
+            )
         self._emit(
             "request.end",
             request_id=request_id,
@@ -210,7 +225,7 @@ class App:
             bodies["request"] = self._body_entry(body)
             bodies["request_meta"] = {
                 "remote_addr": request.remote_addr,
-                "headers": dict(request.headers),
+                "headers": redact_headers(request.headers),
             }
             record.set_bodies(bodies)
 
@@ -219,7 +234,6 @@ class App:
             "direction": "server_bound",
             "path": request.path,
             "client": {"remote_addr": request.remote_addr},
-            "headers": exposed_headers(self.config, request.headers),
             "received_at": started_at,
         }
         envelope = {"kind": "chat.request", "body": body, "meta": meta}
@@ -292,6 +306,7 @@ class App:
                 call.status or 200,
                 filter_response_headers(call.headers),
                 stream=False,
+                header_items=filter_response_header_items(call.headers),
             )
             if self.config.journal.include_bodies:
                 bodies["response"] = (
@@ -495,6 +510,7 @@ class App:
                     stream=True,
                     include_usage=include_usage,
                     parsed=accepted["body"],
+                    header_items=filter_response_header_items(last_call.headers),
                 )
             else:
                 response = self._success_response(
@@ -504,6 +520,7 @@ class App:
                     last_call.status or 200,
                     filter_response_headers(last_call.headers),
                     stream=False,
+                    header_items=filter_response_header_items(last_call.headers),
                 )
             return response, record
 
@@ -581,6 +598,7 @@ class App:
         headers = list(response.headers)
 
         if not 200 <= response.status < 300:
+            header_items = filter_response_header_items(headers)
             return ServerCall(
                 status=response.status,
                 duration_ms=duration,
@@ -589,7 +607,8 @@ class App:
                     request_id,
                     response.status,
                     response.body,
-                    filter_response_headers(headers),
+                    dict(header_items),
+                    header_items,
                 ),
             )
 
@@ -715,9 +734,25 @@ class App:
             }
         )
         record.set_passthrough_status(response.status)
-        headers = filter_response_headers(response.headers)
-        headers["x-consideration-request-id"] = request_id
-        headers["x-consideration-repairs"] = "0"
+        header_items = filter_response_header_items(response.headers)
+        header_items = [
+            (name, value)
+            for name, value in header_items
+            if name.lower()
+            not in {
+                "x-consideration-request-id",
+                "x-consideration-repairs",
+                "x-consideration-verdict",
+                "x-consideration-code",
+            }
+        ]
+        header_items.extend(
+            [
+                ("x-consideration-request-id", request_id),
+                ("x-consideration-repairs", "0"),
+            ]
+        )
+        headers = dict(header_items)
         if self.config.journal.include_bodies:
             record.set_bodies(
                 {
@@ -725,7 +760,7 @@ class App:
                     "response": self._decode(response.body),
                 }
             )
-        return Response(response.status, headers, response.body), record
+        return Response(response.status, headers, response.body, header_items), record
 
     # -- responses -----------------------------------------------------
 
@@ -740,49 +775,86 @@ class App:
         stream: bool,
         include_usage: bool = False,
         parsed: dict[str, Any] | None = None,
+        header_items: list[tuple[str, str]] | None = None,
     ) -> Response:
-        headers = dict(headers)
-        headers.pop("content-length", None)
+        items = [
+            (name, value)
+            for name, value in (header_items or list(headers.items()))
+            if name.lower()
+            not in {
+                "content-length",
+                "x-consideration-request-id",
+                "x-consideration-repairs",
+                "x-consideration-verdict",
+                "x-consideration-code",
+            }
+        ]
+
+        def set_header(name: str, value: str) -> None:
+            nonlocal items
+            items = [(key, item) for key, item in items if key.lower() != name.lower()]
+            items.append((name, value))
+
         if stream:
             if parsed is not None:
                 body = synthesize_sse(parsed, include_usage=include_usage)
-            headers["content-type"] = "text/event-stream"
-            headers["cache-control"] = "no-cache"
-            headers["connection"] = "keep-alive"
-            headers["x-accel-buffering"] = "no"
+            set_header("content-type", "text/event-stream")
+            set_header("cache-control", "no-cache")
+            set_header("connection", "keep-alive")
+            set_header("x-accel-buffering", "no")
         else:
-            headers.setdefault("content-type", "application/json")
-        headers["x-consideration-request-id"] = request_id
-        headers["x-consideration-repairs"] = str(repairs)
-        return Response(status, headers, body)
+            if not any(name.lower() == "content-type" for name, _ in items):
+                set_header("content-type", "application/json")
+        set_header("x-consideration-request-id", request_id)
+        set_header("x-consideration-repairs", str(repairs))
+        return Response(status, dict(items), body, items)
 
     def _terminal_response(
         self, terminal: Terminal, request_id: str, repairs: int
     ) -> Response:
-        headers: dict[str, str] = {}
+        items: list[tuple[str, str]] = []
         if terminal.kind == "passthrough":
-            headers.update(terminal.headers)
-        else:
-            headers["content-type"] = "application/json"
-        headers.pop("content-length", None)
-        headers["x-consideration-request-id"] = request_id
-        headers["x-consideration-repairs"] = str(repairs)
-        headers["x-consideration-verdict"] = terminal.verdict
+            items.extend(terminal.header_items)
+
+        def set_header(name: str, value: str) -> None:
+            nonlocal items
+            items = [(key, item) for key, item in items if key.lower() != name.lower()]
+            items.append((name, value))
+
+        items = [
+            (name, value)
+            for name, value in items
+            if name.lower()
+            not in {
+                "content-length",
+                "x-consideration-request-id",
+                "x-consideration-repairs",
+                "x-consideration-verdict",
+                "x-consideration-code",
+            }
+        ]
+        if not items and terminal.kind != "passthrough":
+            items.append(("content-type", "application/json"))
+        set_header("x-consideration-request-id", request_id)
+        set_header("x-consideration-repairs", str(repairs))
+        set_header("x-consideration-verdict", terminal.verdict)
         if terminal.host_code is not None:
-            headers["x-consideration-code"] = terminal.host_code
-        return Response(terminal.status, headers, terminal.body_bytes())
+            set_header("x-consideration-code", terminal.host_code)
+        return Response(terminal.status, dict(items), terminal.body_bytes(), items)
 
     # -- journal -------------------------------------------------------
 
     def _decode(self, data: bytes) -> Any:
         try:
-            return json.loads(data.decode("utf-8"))
+            value = json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            text, truncated = truncate_bytes(
-                data.decode("utf-8", errors="replace"),
-                self.config.journal.max_body_bytes,
-            )
-            return {"text": text, "truncated": truncated}
+            value = data.decode("utf-8", errors="replace")
+        text = value if isinstance(value, str) else dumps(value)
+        encoded_size = len(text.encode("utf-8"))
+        if encoded_size <= self.config.journal.max_body_bytes:
+            return value
+        clipped, _ = truncate_bytes(text, self.config.journal.max_body_bytes)
+        return {"text": clipped, "truncated": True}
 
     def _body_entry(self, value: Any) -> dict[str, Any]:
         text = dumps(value)
@@ -798,8 +870,10 @@ class App:
             return
         try:
             self.telemetry.emit(event, **fields)
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "telemetry event %s failed (%s)", event, type(exc).__name__
+            )
 
 
 def build_app(config: Config) -> App:

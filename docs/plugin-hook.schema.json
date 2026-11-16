@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/consideration/v0.2.0/plugin-hook.schema.json",
+  "title": "consideration v0.2.0 plugin hook parameters",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "stage_id",
+    "hook",
+    "direction",
+    "request_id",
+    "attempt",
+    "deadline_ms",
+    "envelope",
+    "state"
+  ],
+  "properties": {
+    "stage_id": { "type": "string", "minLength": 1 },
+    "hook": { "enum": ["request", "response"] },
+    "direction": { "enum": ["server_bound", "client_bound"] },
+    "request_id": { "type": "string", "minLength": 1 },
+    "attempt": { "type": "integer", "minimum": 0 },
+    "deadline_ms": { "type": "integer", "minimum": 1 },
+    "envelope": { "$ref": "#/$defs/envelope" },
+    "state": { "type": "object" },
+    "context": { "$ref": "#/$defs/context" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "direction": { "const": "server_bound" } } },
+      "then": {
+        "properties": { "hook": { "const": "request" } },
+        "not": { "required": ["context"] }
+      }
+    },
+    {
+      "if": { "properties": { "direction": { "const": "client_bound" } } },
+      "then": {
+        "properties": { "hook": { "const": "response" } },
+        "required": ["context"]
+      }
+    }
+  ],
+  "$defs": {
+    "envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "body", "meta"],
+      "properties": {
+        "kind": { "enum": ["chat.request", "chat.response"] },
+        "body": { "type": "object" },
+        "meta": { "$ref": "#/$defs/envelopeMeta" }
+      }
+    },
+    "envelopeMeta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_id", "direction", "received_at"],
+      "properties": {
+        "request_id": { "type": "string", "minLength": 1 },
+        "direction": { "enum": ["server_bound", "client_bound"] },
+        "path": { "type": "string", "minLength": 1 },
+        "client": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["remote_addr"],
+          "properties": { "remote_addr": { "type": "string" } }
+        },
+        "received_at": { "type": "string", "minLength": 1 }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server_request"],
+      "properties": {
+        "server_request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "body"],
+          "properties": {
+            "kind": { "const": "chat.request" },
+            "body": { "type": "object" }
+          }
+        }
+      }
+    }
+  }
+}

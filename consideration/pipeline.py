@@ -14,17 +14,7 @@ from .plugin import PluginManager
 from .state import StateStore, apply_writes
 from .terminal import Terminal, plugin_failure, policy_terminal
 from .util import deep_copy, json_hash
-
-SEVERITIES = {"info", "warning", "error", "critical"}
-VIOLATION_KEYS = {
-    "code",
-    "severity",
-    "message",
-    "hint",
-    "retryable",
-    "spans",
-    "details",
-}
+from .validation import VIOLATION_KEYS, validate_violation
 
 
 @dataclass
@@ -62,18 +52,20 @@ class StateWriteRecord:
     plugin: str
     attempt: int
     keys: list[str]
-    values: str
+    values: dict[str, Any] | None = None
     committed: bool = False
 
     def journal(self) -> dict[str, Any]:
-        return {
+        value = {
             "stage_id": self.stage_id,
             "plugin": self.plugin,
             "attempt": self.attempt,
             "keys": self.keys,
-            "values": self.values,
             "committed": self.committed,
         }
+        if self.values is not None:
+            value["values"] = self.values
+        return value
 
 
 @dataclass
@@ -82,7 +74,6 @@ class PipelineResult:
     terminal: Terminal | None
     stages: list[StageRecord] = field(default_factory=list)
     state_writes: list[StateWriteRecord] = field(default_factory=list)
-    changed: bool = False
     terminal_stage_id: str | None = None
 
     def journal(self) -> dict[str, Any]:
@@ -115,39 +106,6 @@ def enrich_violation(stage: StageConfig, violation: dict[str, Any]) -> dict[str,
     }
     enriched.update(clean)
     return enriched
-
-
-def validate_violation(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise InvalidResult("violation must be an object")
-    for key in ("code", "severity", "message", "retryable"):
-        if key not in value:
-            raise InvalidResult(f"violation is missing {key}")
-    if not isinstance(value["code"], str) or not value["code"]:
-        raise InvalidResult("violation.code must be a non-empty string")
-    if value["severity"] not in SEVERITIES:
-        raise InvalidResult("violation.severity is invalid")
-    if not isinstance(value["message"], str):
-        raise InvalidResult("violation.message must be a string")
-    if not isinstance(value["retryable"], bool):
-        raise InvalidResult("violation.retryable must be a boolean")
-    if "hint" in value and not isinstance(value["hint"], str):
-        raise InvalidResult("violation.hint must be a string")
-    spans = value.get("spans")
-    if spans is not None:
-        if not isinstance(spans, list):
-            raise InvalidResult("violation.spans must be a list")
-        for span in spans:
-            if (
-                not isinstance(span, dict)
-                or not isinstance(span.get("path"), str)
-                or not isinstance(span.get("start"), int)
-                or not isinstance(span.get("end"), int)
-            ):
-                raise InvalidResult("violation spans must have path, start, and end")
-    if "details" in value and not isinstance(value["details"], dict):
-        raise InvalidResult("violation.details must be an object")
-    return value
 
 
 class PipelineRunner:
@@ -287,7 +245,11 @@ class PipelineRunner:
                             plugin=stage.plugin,
                             attempt=attempt,
                             keys=keys,
-                            values=self.config.journal.state_values,
+                            values=(
+                                deep_copy(writes)
+                                if self.config.journal.include_bodies
+                                else None
+                            ),
                         )
                     )
                 result.terminal = policy_terminal(request_id, direction, violations)
@@ -306,12 +268,13 @@ class PipelineRunner:
                         plugin=stage.plugin,
                         attempt=attempt,
                         keys=keys,
-                        values=self.config.journal.state_values,
+                        values=(
+                            deep_copy(writes)
+                            if self.config.journal.include_bodies
+                            else None
+                        ),
                     )
                 )
-            if action in ("patch", "replace"):
-                result.changed = True
-
         state_store.commit(staged)
         self._finish_writes(result, committed=True)
         return result
@@ -331,6 +294,12 @@ class PipelineRunner:
     ]:
         if not isinstance(raw, dict):
             raise InvalidResult("hook result must be an object")
+        state_writes = raw.get("state")
+        if stage.read_only and state_writes not in (None, {}):
+            if not isinstance(state_writes, dict) or any(
+                state_writes.get(key) for key in ("set", "delete")
+            ):
+                raise InvalidResult("read-only plugin must not write state")
         allowed = {"action", "patch", "body", "state", "violations"}
         unknown = set(raw) - allowed
         if unknown:
@@ -361,7 +330,9 @@ class PipelineRunner:
             if not raw_violations:
                 raise InvalidResult("terminate requires at least one violation")
             violations = [
-                enrich_violation(stage, validate_violation(value))
+                enrich_violation(
+                    stage, validate_violation(value, "violation", InvalidResult)
+                )
                 for value in raw_violations
             ]
         else:
@@ -414,7 +385,9 @@ class PipelineRunner:
             return None
         if stage.on_error == "fail_verdict":
             violations = [
-                enrich_violation(stage, validate_violation(value))
+                enrich_violation(
+                    stage, validate_violation(value, "violation", InvalidResult)
+                )
                 for value in stage.fallback_violations
             ]
             return policy_terminal(request_id, direction, violations, kind="host_error")

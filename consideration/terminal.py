@@ -21,6 +21,7 @@ class Terminal:
     repair: dict[str, Any] | None = None
     raw_body: bytes | None = None
     headers: dict[str, str] = field(default_factory=dict)
+    header_items: list[tuple[str, str]] = field(default_factory=list)
 
     def body_bytes(self) -> bytes:
         if self.raw_body is not None:
@@ -145,6 +146,7 @@ def passthrough_error(
     status: int,
     body: bytes,
     headers: dict[str, str],
+    header_items: list[tuple[str, str]] | None = None,
 ) -> Terminal:
     return Terminal(
         status=status,
@@ -155,6 +157,7 @@ def passthrough_error(
         host_code=None,
         raw_body=body,
         headers=headers,
+        header_items=header_items or list(headers.items()),
     )
 
 

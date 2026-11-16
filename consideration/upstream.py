@@ -52,6 +52,16 @@ class UpstreamResponse:
         return {key.lower(): value for key, value in self.headers}
 
 
+def connection_header_tokens(headers: Iterable[tuple[str, str]]) -> set[str]:
+    tokens: set[str] = set()
+    for name, value in headers:
+        if name.lower() == "connection":
+            tokens.update(
+                token.strip().lower() for token in value.split(",") if token.strip()
+            )
+    return tokens
+
+
 def is_credential_header(name: str) -> bool:
     lowered = name.lower()
     return (
@@ -62,8 +72,11 @@ def is_credential_header(name: str) -> bool:
     )
 
 
-def _credential_name(name: str) -> bool:
-    return is_credential_header(name)
+def redact_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Return a copy without credential- or cookie-bearing header values."""
+    return {
+        name: value for name, value in headers.items() if not is_credential_header(name)
+    }
 
 
 class UpstreamClient:
@@ -84,14 +97,19 @@ class UpstreamClient:
         self, client_headers: dict[str, str], body_length: int | None
     ) -> dict[str, str]:
         headers: dict[str, str] = {}
+        nominated = connection_header_tokens(client_headers.items())
         for name, value in client_headers.items():
             lowered = name.lower()
-            if lowered in HOP_BY_HOP or lowered == "accept-encoding":
+            if (
+                lowered in HOP_BY_HOP
+                or lowered in nominated
+                or lowered == "accept-encoding"
+            ):
                 continue
             if lowered == "authorization":
                 headers["authorization"] = value
                 continue
-            if _credential_name(lowered):
+            if is_credential_header(lowered):
                 continue
             if any(
                 fnmatch.fnmatch(lowered, pattern.lower())
@@ -104,6 +122,14 @@ class UpstreamClient:
             key.lower() for key in headers
         }:
             headers["openai-organization"] = self.config.server.organization
+        nominated = connection_header_tokens(headers.items())
+        headers = {
+            name: value
+            for name, value in headers.items()
+            if name.lower() not in HOP_BY_HOP
+            and name.lower() not in nominated
+            and name.lower() != "accept-encoding"
+        }
         if body_length is not None:
             headers["content-length"] = str(body_length)
         return headers
@@ -158,23 +184,18 @@ class UpstreamClient:
 
 
 def filter_response_headers(headers: Iterable[tuple[str, str]]) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for name, value in headers:
+    return dict(filter_response_header_items(headers))
+
+
+def filter_response_header_items(
+    headers: Iterable[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    values = list(headers)
+    nominated = connection_header_tokens(values)
+    result: list[tuple[str, str]] = []
+    for name, value in values:
         lowered = name.lower()
-        if lowered in HOP_BY_HOP or lowered == "content-length":
+        if lowered in HOP_BY_HOP or lowered in nominated:
             continue
-        result[name] = value
+        result.append((name, value))
     return result
-
-
-def iter_response(response: http.client.HTTPResponse, chunk_size: int = 8192):
-    try:
-        while True:
-            data = response.read(chunk_size)
-            if not data:
-                break
-            yield data
-    except TimeoutError:
-        return
-    except (OSError, http.client.HTTPException):
-        return

@@ -73,7 +73,6 @@ class PipelineTests(unittest.TestCase):
     def test_continue(self):
         result = self.pipeline_run(self.runner())
         self.assertIsNone(result.terminal)
-        self.assertFalse(result.changed)
         self.assertEqual(result.envelope["body"], REQUEST["body"])
         self.assertEqual(result.stages[0].action, "continue")
 
@@ -86,7 +85,6 @@ class PipelineTests(unittest.TestCase):
         )
         result = self.pipeline_run(runner)
         self.assertIsNone(result.terminal)
-        self.assertTrue(result.changed)
         self.assertEqual(result.envelope["body"]["messages"][0]["content"], "x")
 
     def test_replace(self):
@@ -114,7 +112,33 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(rendered["plugin"], "acme/echo")
         self.assertEqual(rendered["stage_id"], "out")
         self.assertEqual(rendered["code"], "style.em_dash")
-        self.assertIs(result.changed, False)
+
+    def test_plugin_violation_uses_shared_span_validation(self):
+        violation = {
+            "code": "test.invalid",
+            "severity": "error",
+            "message": "invalid",
+            "retryable": False,
+            "spans": [{"path": "/x", "start": 5, "end": 2}],
+        }
+        result = self.pipeline_run(
+            self.runner(plugin_config={"mode": "terminate", "violations": [violation]})
+        )
+        self.assertIsNotNone(result.terminal)
+        self.assertEqual(result.terminal.error["code"], "plugin_invalid_output")
+
+    def test_critical_plugin_violation_cannot_be_retryable(self):
+        violation = {
+            "code": "test.critical",
+            "severity": "critical",
+            "message": "critical",
+            "retryable": True,
+        }
+        result = self.pipeline_run(
+            self.runner(plugin_config={"mode": "terminate", "violations": [violation]})
+        )
+        self.assertIsNotNone(result.terminal)
+        self.assertEqual(result.terminal.error["code"], "plugin_invalid_output")
 
     def test_invalid_action_fail_closed(self):
         result = self.pipeline_run(self.runner(plugin_config={"mode": "invalid"}))
@@ -123,6 +147,21 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result.terminal.status, 500)
         self.assertEqual(result.terminal.error["code"], "plugin_invalid_output")
         self.assertEqual(result.terminal.kind, "host_error")
+
+    def test_read_only_plugin_cannot_write_state(self):
+        config = make_config(
+            self.root,
+            plugin_config={"state_set": {"token": "value"}},
+            read_only=True,
+        )
+        manager = PluginManager(config, telemetry=None)
+        manager.start_all()
+        self.managers.append(manager)
+        result = PipelineRunner(config, manager, telemetry=None).run(
+            "server_bound", REQUEST, "req_test", 0, StateStore()
+        )
+        self.assertIsNotNone(result.terminal)
+        self.assertEqual(result.terminal.error["code"], "plugin_invalid_output")
 
     def test_invalid_replacement_structure(self):
         result = self.pipeline_run(

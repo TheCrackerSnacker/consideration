@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import ast
+import ipaddress
 import json
 import os
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from . import CONTRACT_VERSION
 from .util import canonical_json, sha256_bytes
+from .validation import validate_violation
 from .yamlmini import YAMLError
 from .yamlmini import loads as yaml_loads
 
@@ -29,6 +33,7 @@ class StageConfig:
     fallback_violations: tuple[dict[str, Any], ...] = ()
     plugin_version: str = ""
     paired: bool = False
+    read_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,8 @@ class PluginEntry:
     id: str
     manifest_path: str
     manifest: dict[str, Any]
+    manifest_digest: str
+    artifact_digest: str
     required: bool
     config: dict[str, Any]
     artifact: str | None
@@ -60,7 +67,6 @@ class PluginEntry:
 
 @dataclass(frozen=True)
 class PluginsConfig:
-    directory: str
     startup_timeout_ms: int
     workers: int
     max_frame_bytes: int
@@ -75,7 +81,6 @@ class ServerConfig:
     organization: str | None
     timeout_ms: int
     headers: dict[str, str]
-    passthrough_paths: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -84,7 +89,6 @@ class JournalConfig:
     path: str
     include_bodies: bool
     max_body_bytes: int
-    state_values: str
     acknowledge_sensitive: bool
 
 
@@ -101,6 +105,8 @@ class Config:
     listen_host: str
     listen_port: int
     max_body_bytes: int
+    max_transport_body_bytes: int
+    read_timeout_ms: int
     header_allowlist: tuple[str, ...]
     server: ServerConfig
     plugins: PluginsConfig
@@ -129,7 +135,6 @@ STAGE_KEYS = {
     "fallback_violations",
 }
 ON_ERROR = {"fail_open", "fail_closed", "fail_verdict"}
-SEVERITIES = {"info", "warning", "error", "critical"}
 
 
 def _require_mapping(value: Any, where: str) -> dict[str, Any]:
@@ -211,10 +216,20 @@ def _load_manifest(path: Path, entry_id: str) -> tuple[dict[str, Any], str, str]
     for key in ("id", "version", "contract", "hooks", "read_only"):
         if key not in manifest:
             raise ConfigError(f"plugin {entry_id}: manifest missing {key}")
+    if not isinstance(manifest["id"], str) or not manifest["id"]:
+        raise ConfigError(f"plugin {entry_id}: manifest id must be a non-empty string")
     if manifest["id"] != entry_id:
         raise ConfigError(
             f"plugin {entry_id}: manifest id {manifest['id']!r} does not match the install record"
         )
+    if not isinstance(manifest["version"], str) or not re.fullmatch(
+        r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", manifest["version"]
+    ):
+        raise ConfigError(
+            f"plugin {entry_id}: manifest version must be semantic version text"
+        )
+    if not isinstance(manifest["contract"], str):
+        raise ConfigError(f"plugin {entry_id}: manifest contract must be a string")
     if not contract_compatible(CONTRACT_VERSION, manifest["contract"]):
         raise ConfigError(
             f"plugin {entry_id}: contract {manifest['contract']} is incompatible with {CONTRACT_VERSION}"
@@ -222,15 +237,147 @@ def _load_manifest(path: Path, entry_id: str) -> tuple[dict[str, Any], str, str]
     hooks = manifest["hooks"]
     if not isinstance(hooks, dict):
         raise ConfigError(f"plugin {entry_id}: hooks must be an object")
+    if set(hooks) - {"server_bound", "client_bound"}:
+        raise ConfigError(f"plugin {entry_id}: hooks has an unknown direction")
     for direction in ("server_bound", "client_bound"):
         values = hooks.get(direction, [])
-        if not isinstance(values, list) or any(
-            v not in ("request", "response") for v in values
-        ):
+        expected_hook = "request" if direction == "server_bound" else "response"
+        if not isinstance(values, list) or any(v != expected_hook for v in values):
             raise ConfigError(
-                f"plugin {entry_id}: hooks.{direction} must be a list of hook names"
+                f"plugin {entry_id}: hooks.{direction} must be a list containing only {expected_hook!r}"
             )
+    if not isinstance(manifest["read_only"], bool):
+        raise ConfigError(f"plugin {entry_id}: read_only must be a boolean")
+    if "paired" in manifest and not isinstance(manifest["paired"], bool):
+        raise ConfigError(f"plugin {entry_id}: paired must be a boolean")
+    if "config_schema" in manifest and not isinstance(manifest["config_schema"], dict):
+        raise ConfigError(f"plugin {entry_id}: config_schema must be an object")
     return manifest, sha256_bytes(raw), str(path)
+
+
+def plugin_artifact_digest(command: list[str], cwd: Path, where: str) -> str | None:
+    """Hash launched code, or return None when an opaque module needs an external pin."""
+    script_suffixes = {
+        ".py",
+        ".pyw",
+        ".js",
+        ".mjs",
+        ".cjs",
+        ".rb",
+        ".sh",
+        ".jar",
+        ".zip",
+        ".whl",
+        ".wasm",
+        ".exe",
+        ".dll",
+        ".bin",
+    }
+    executable_suffixes = {".exe", ".dll", ".bin"}
+    entrypoint = next(
+        (
+            (cwd / part).resolve()
+            for part in command[1:]
+            if Path(part).suffix.lower() in script_suffixes - executable_suffixes
+            and (cwd / part).is_file()
+        ),
+        None,
+    )
+    missing_scripts = [
+        part
+        for part in command[1:]
+        if Path(part).suffix.lower() in script_suffixes - executable_suffixes
+        and not (cwd / part).is_file()
+    ]
+    if entrypoint is None and missing_scripts:
+        raise ConfigError(
+            f"{where}: launched plugin script not found: {missing_scripts[0]}"
+        )
+    if entrypoint is None and any(flag in command for flag in ("-m", "-c", "-e")):
+        return None
+    if entrypoint is None:
+        entrypoint = next(
+            (
+                (cwd / part).resolve()
+                for part in command[1:]
+                if not part.startswith("-") and (cwd / part).is_file()
+            ),
+            None,
+        )
+    if entrypoint is None:
+        executable_name = Path(command[0]).name.lower() if command else ""
+        if executable_name in {
+            "python",
+            "python3",
+            "python.exe",
+            "node",
+            "node.exe",
+            "ruby",
+            "java",
+        }:
+            return None
+        if command:
+            executable = (cwd / command[0]).resolve()
+            if (
+                executable.is_file()
+                and executable.suffix.lower() in executable_suffixes
+            ):
+                entrypoint = executable
+    if entrypoint is None:
+        executable = shutil.which(command[0]) if command else None
+        entrypoint = Path(executable).resolve() if executable else None
+    if entrypoint is None:
+        return None
+    files = {entrypoint}
+    if entrypoint.suffix.lower() in {".py", ".pyw"}:
+        files.update(entrypoint.parent.rglob("*.py"))
+        source_roots = (entrypoint.parent, entrypoint.parent.parent)
+        pending = list(files)
+        while pending:
+            source = pending.pop()
+            try:
+                tree = ast.parse(
+                    source.read_text(encoding="utf-8"), filename=str(source)
+                )
+            except (OSError, SyntaxError, UnicodeDecodeError) as exc:
+                raise ConfigError(
+                    f"{where}: cannot inspect plugin source {source}: {exc}"
+                ) from exc
+            modules = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    modules.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    modules.add(node.module)
+            for module in modules:
+                parts = module.split(".")
+                for root in source_roots:
+                    candidates = (
+                        root.joinpath(*parts).with_suffix(".py"),
+                        root.joinpath(*parts, "__init__.py"),
+                    )
+                    for candidate in candidates:
+                        candidate = candidate.resolve()
+                        if candidate.is_file() and candidate not in files:
+                            files.add(candidate)
+                            pending.append(candidate)
+                            break
+    elif entrypoint.suffix.lower() in {".js", ".mjs", ".cjs", ".rb", ".sh"}:
+        files.update(entrypoint.parent.rglob(f"*{entrypoint.suffix}"))
+    material = []
+    for path in sorted(files, key=lambda item: str(item).casefold()):
+        try:
+            material.append(
+                {
+                    "path": Path(os.path.relpath(path, entrypoint.parent)).as_posix(),
+                    "sha256": sha256_bytes(path.read_bytes()),
+                }
+            )
+        except (OSError, ValueError) as exc:
+            raise ConfigError(
+                f"{where}: cannot hash plugin artifact {path}: {exc}"
+            ) from exc
+    return sha256_bytes(canonical_json(material).encode("utf-8"))
 
 
 def _validate_stage(
@@ -257,16 +404,22 @@ def _validate_stage(
     if "on_error" not in raw:
         raise ConfigError(f"{where}: on_error is required")
     on_error = raw["on_error"]
-    if on_error not in ON_ERROR:
+    if not isinstance(on_error, str) or on_error not in ON_ERROR:
         raise ConfigError(f"{where}.on_error must be one of {sorted(ON_ERROR)}")
     timeout_ms = _require_int(raw.get("timeout_ms"), f"{where}.timeout_ms", 1)
-    fallback = raw.get("fallback_violations") or []
+    fallback = raw.get("fallback_violations", [])
+    if fallback is None:
+        fallback = []
     if not isinstance(fallback, list):
         raise ConfigError(f"{where}.fallback_violations must be a list")
     if on_error == "fail_verdict" and not fallback:
         raise ConfigError(f"{where}: fail_verdict requires fallback_violations")
     for index, violation in enumerate(fallback):
-        _validate_violation(violation, f"{where}.fallback_violations[{index}]")
+        validate_violation(
+            violation,
+            f"{where}.fallback_violations[{index}]",
+            ConfigError,
+        )
     return StageConfig(
         stage_id=stage_id,
         plugin=plugin_id,
@@ -276,34 +429,43 @@ def _validate_stage(
         fallback_violations=tuple(dict(v) for v in fallback),
         plugin_version=str(entry.manifest.get("version", "")),
         paired=bool(entry.manifest.get("paired", False)),
+        read_only=entry.manifest["read_only"],
     )
 
 
-def _validate_violation(value: Any, where: str) -> None:
-    if not isinstance(value, dict):
-        raise ConfigError(f"{where} must be an object")
-    for key in ("code", "severity", "message", "retryable"):
-        if key not in value:
-            raise ConfigError(f"{where}: missing {key}")
-    if not isinstance(value["code"], str) or not value["code"]:
-        raise ConfigError(f"{where}.code must be a non-empty string")
-    if value["severity"] not in SEVERITIES:
-        raise ConfigError(f"{where}.severity must be one of {sorted(SEVERITIES)}")
-    if not isinstance(value["message"], str):
-        raise ConfigError(f"{where}.message must be a string")
-    if not isinstance(value["retryable"], bool):
-        raise ConfigError(f"{where}.retryable must be a boolean")
-
-
-def _parse_host(raw: dict[str, Any]) -> tuple[str, int, int, tuple[str, ...]]:
+def _parse_host(
+    raw: dict[str, Any],
+) -> tuple[str, int, int, int, int, tuple[str, ...]]:
     host = _require_mapping(raw.get("host"), "host")
-    _check_keys(host, {"listen", "max_body_bytes", "header_allowlist"}, "host")
+    _check_keys(
+        host,
+        {
+            "listen",
+            "max_body_bytes",
+            "max_transport_body_bytes",
+            "read_timeout_ms",
+            "header_allowlist",
+        },
+        "host",
+    )
     listen = host.get("listen", "127.0.0.1:4000")
     listen = _require_str(listen, "host.listen")
     if listen.startswith("["):
-        host_part, _, port_part = listen.rpartition("]:")
+        closing = listen.find("]")
+        if closing < 0 or listen[closing + 1 : closing + 2] != ":":
+            raise ConfigError("host.listen must use [IPv6]:PORT for IPv6 addresses")
+        host_part = listen[1:closing]
+        port_part = listen[closing + 2 :]
+        try:
+            ipaddress.IPv6Address(host_part)
+        except ipaddress.AddressValueError as exc:
+            raise ConfigError(
+                "host.listen bracketed host must be a valid IPv6 address"
+            ) from exc
     else:
-        host_part, _, port_part = listen.rpartition(":")
+        if listen.count(":") != 1:
+            raise ConfigError("IPv6 host.listen addresses must be enclosed in brackets")
+        host_part, port_part = listen.rsplit(":", 1)
     if not host_part or not port_part:
         raise ConfigError("host.listen must be HOST:PORT")
     try:
@@ -312,22 +474,38 @@ def _parse_host(raw: dict[str, Any]) -> tuple[str, int, int, tuple[str, ...]]:
         raise ConfigError("host.listen port must be an integer") from exc
     if not 0 <= port <= 65535:
         raise ConfigError("host.listen port must be between 0 and 65535")
+    if not listen.startswith("["):
+        try:
+            ipaddress.IPv4Address(host_part)
+        except ipaddress.AddressValueError:
+            if not re.fullmatch(r"[A-Za-z0-9.-]+", host_part):
+                raise ConfigError(
+                    "host.listen host must be a hostname or IPv4 address"
+                ) from None
     max_body = _require_int(
         host.get("max_body_bytes", 32 * 1024 * 1024), "host.max_body_bytes", 1
+    )
+    max_transport_body = _require_int(
+        host.get("max_transport_body_bytes", 128 * 1024 * 1024),
+        "host.max_transport_body_bytes",
+        1,
+    )
+    read_timeout = _require_int(
+        host.get("read_timeout_ms", 10000), "host.read_timeout_ms", 1
     )
     allowlist = host.get("header_allowlist", list(DEFAULT_HEADER_ALLOWLIST))
     if not isinstance(allowlist, list) or any(
         not isinstance(v, str) for v in allowlist
     ):
         raise ConfigError("host.header_allowlist must be a list of strings")
-    return host_part, port, max_body, tuple(allowlist)
+    return host_part, port, max_body, max_transport_body, read_timeout, tuple(allowlist)
 
 
 def _parse_server(raw: dict[str, Any]) -> ServerConfig:
     server = _require_mapping(raw.get("server"), "server")
     _check_keys(
         server,
-        {"base_url", "organization", "timeout_ms", "headers", "passthrough_paths"},
+        {"base_url", "organization", "timeout_ms", "headers"},
         "server",
     )
     base_url = _require_str(server.get("base_url"), "server.base_url").rstrip("/")
@@ -351,12 +529,7 @@ def _parse_server(raw: dict[str, Any]) -> ServerConfig:
         if not isinstance(value, str):
             raise ConfigError(f"server.headers.{name} must be a string")
         headers[str(name)] = value
-    paths = server.get("passthrough_paths", [])
-    if not isinstance(paths, list) or any(
-        not isinstance(p, str) or not p.startswith("/") for p in paths
-    ):
-        raise ConfigError("server.passthrough_paths must be a list of absolute paths")
-    return ServerConfig(base_url, organization, timeout_ms, headers, tuple(paths))
+    return ServerConfig(base_url, organization, timeout_ms, headers)
 
 
 def _parse_plugins(raw: dict[str, Any], config_dir: Path) -> PluginsConfig:
@@ -364,7 +537,6 @@ def _parse_plugins(raw: dict[str, Any], config_dir: Path) -> PluginsConfig:
     _check_keys(
         plugins,
         {
-            "directory",
             "startup_timeout_ms",
             "workers",
             "max_frame_bytes",
@@ -374,7 +546,6 @@ def _parse_plugins(raw: dict[str, Any], config_dir: Path) -> PluginsConfig:
         },
         "plugins",
     )
-    directory = _require_str(plugins.get("directory", "./plugins"), "plugins.directory")
     startup = _require_int(
         plugins.get("startup_timeout_ms", 5000), "plugins.startup_timeout_ms", 1
     )
@@ -392,7 +563,6 @@ def _parse_plugins(raw: dict[str, Any], config_dir: Path) -> PluginsConfig:
     if not isinstance(raw_entries, list):
         raise ConfigError("plugins.entries must be a list")
     entries: dict[str, PluginEntry] = {}
-    manifest_hashes: dict[str, str] = {}
     for index, raw_entry in enumerate(raw_entries):
         where = f"plugins.entries[{index}]"
         entry = _require_mapping(raw_entry, where)
@@ -402,14 +572,9 @@ def _parse_plugins(raw: dict[str, Any], config_dir: Path) -> PluginsConfig:
             raise ConfigError(f"{where}: duplicate plugin id {entry_id!r}")
         manifest_name = _require_str(entry.get("manifest"), f"{where}.manifest")
         manifest_path = (config_dir / manifest_name).resolve()
-        manifest, digest, manifest_path_str = _load_manifest(manifest_path, entry_id)
-        artifact = entry.get("artifact")
-        if artifact is not None:
-            artifact = _require_str(artifact, f"{where}.artifact")
-            if artifact != digest:
-                raise ConfigError(
-                    f"{where}: artifact {artifact} does not match manifest hash {digest}"
-                )
+        manifest, manifest_digest, manifest_path_str = _load_manifest(
+            manifest_path, entry_id
+        )
         required = entry.get("required", True)
         required = _require_bool(required, f"{where}.required")
         plugin_config = _require_mapping(entry.get("config"), f"{where}.config")
@@ -419,19 +584,38 @@ def _parse_plugins(raw: dict[str, Any], config_dir: Path) -> PluginsConfig:
         if (
             not isinstance(command, list)
             or not command
-            or any(not isinstance(part, str) for part in command)
+            or any(not isinstance(part, str) or not part for part in command)
         ):
             raise ConfigError(
                 f"{where}: manifest must declare command as a string or list"
             )
         cwd_value = manifest.get("cwd", ".")
         cwd = (manifest_path.parent / _require_str(cwd_value, f"{where}.cwd")).resolve()
+        artifact_digest = plugin_artifact_digest(command, cwd, where)
+        artifact = entry.get("artifact")
+        if artifact is not None:
+            artifact = _require_str(artifact, f"{where}.artifact")
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact):
+                raise ConfigError(f"{where}.artifact must be a sha256 digest")
+        if artifact_digest is None:
+            if artifact is None:
+                raise ConfigError(
+                    f"{where}: opaque plugin commands require an external artifact digest"
+                )
+            artifact_digest = artifact
+        if artifact is not None:
+            if artifact != artifact_digest:
+                raise ConfigError(
+                    f"{where}: artifact {artifact} does not match launched plugin artifact {artifact_digest}"
+                )
         env_raw = _require_mapping(manifest.get("env"), f"{where}.env")
         env = {str(k): str(v) for k, v in env_raw.items()}
         entries[entry_id] = PluginEntry(
             id=entry_id,
             manifest_path=manifest_path_str,
             manifest=manifest,
+            manifest_digest=manifest_digest,
+            artifact_digest=artifact_digest,
             required=required,
             config=dict(plugin_config),
             artifact=artifact,
@@ -439,9 +623,7 @@ def _parse_plugins(raw: dict[str, Any], config_dir: Path) -> PluginsConfig:
             cwd=str(cwd),
             env=env,
         )
-        manifest_hashes[entry_id] = digest
     return PluginsConfig(
-        directory=str((config_dir / directory).resolve()),
         startup_timeout_ms=startup,
         workers=workers,
         max_frame_bytes=max_frame,
@@ -506,7 +688,10 @@ def _parse_pipeline(
             repair_raw.get("total_timeout_ms", 0), "pipeline.repair.total_timeout_ms", 0
         ),
     )
-    if repair.on_exhaustion not in {"violation", "http_502"}:
+    if not isinstance(repair.on_exhaustion, str) or repair.on_exhaustion not in {
+        "violation",
+        "http_502",
+    }:
         raise ConfigError(
             "pipeline.repair.on_exhaustion must be 'violation' or 'http_502'"
         )
@@ -522,7 +707,6 @@ def _parse_journal(raw: dict[str, Any], config_dir: Path) -> JournalConfig:
             "path",
             "include_bodies",
             "max_body_bytes",
-            "state_values",
             "acknowledge_sensitive",
         },
         "journal",
@@ -535,23 +719,18 @@ def _parse_journal(raw: dict[str, Any], config_dir: Path) -> JournalConfig:
     max_body = _require_int(
         journal.get("max_body_bytes", 262144), "journal.max_body_bytes", 1
     )
-    state_values = journal.get("state_values", "hash")
-    if state_values not in {"hash", "plaintext"}:
-        raise ConfigError("journal.state_values must be 'hash' or 'plaintext'")
     acknowledge = _require_bool(
         journal.get("acknowledge_sensitive", False), "journal.acknowledge_sensitive"
     )
-    if enabled and include_bodies and state_values == "plaintext" and not acknowledge:
+    if enabled and include_bodies and not acknowledge:
         raise ConfigError(
-            "journal.include_bodies with state_values: plaintext requires "
-            "journal.acknowledge_sensitive: true"
+            "journal.include_bodies requires journal.acknowledge_sensitive: true"
         )
     return JournalConfig(
         enabled,
         str((config_dir / path).resolve()),
         include_bodies,
         max_body,
-        state_values,
         acknowledge,
     )
 
@@ -597,32 +776,31 @@ def load_config(path: str | Path) -> Config:
     )
     config_dir = source.parent
 
-    listen_host, listen_port, max_body, allowlist = _parse_host(raw)
+    (
+        listen_host,
+        listen_port,
+        max_body,
+        max_transport_body,
+        read_timeout,
+        allowlist,
+    ) = _parse_host(raw)
     server = _parse_server(raw)
     plugins = _parse_plugins(raw, config_dir)
     pipeline = _parse_pipeline(raw, plugins.entries)
     journal = _parse_journal(raw, config_dir)
     telemetry = _parse_telemetry(raw, config_dir)
 
-    for passthrough in server.passthrough_paths:
-        normalized = passthrough.rstrip("/") or "/"
-        if (
-            normalized == "/v1/chat/completions"
-            or "/v1/chat/completions".startswith(normalized + "/")
-            or normalized.startswith("/v1/chat/completions/")
-        ):
-            raise ConfigError(
-                f"server.passthrough_paths entry {passthrough!r} overlaps /v1/chat/completions"
-            )
-
-    manifest_hashes = {
-        entry_id: sha256_bytes(Path(entry.manifest_path).read_bytes())
-        for entry_id, entry in plugins.entries.items()
-    }
     hash_material = {
         "config": raw,
         "manifests": {key: entry.manifest for key, entry in plugins.entries.items()},
-        "artifacts": manifest_hashes,
+        "manifest_hashes": {
+            entry_id: entry.manifest_digest
+            for entry_id, entry in plugins.entries.items()
+        },
+        "artifacts": {
+            entry_id: entry.artifact_digest
+            for entry_id, entry in plugins.entries.items()
+        },
     }
     config_hash = sha256_bytes(canonical_json(hash_material).encode("utf-8"))
 
@@ -632,6 +810,8 @@ def load_config(path: str | Path) -> Config:
         listen_host=listen_host,
         listen_port=listen_port,
         max_body_bytes=max_body,
+        max_transport_body_bytes=max_transport_body,
+        read_timeout_ms=read_timeout,
         header_allowlist=allowlist,
         server=server,
         plugins=plugins,

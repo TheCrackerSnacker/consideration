@@ -23,40 +23,54 @@ def synthesize_sse(body: dict[str, Any], include_usage: bool = False) -> bytes:
     created = body.get("created", 0)
     model = body.get("model", "")
     choices = body.get("choices") or []
-    first = choices[0] if choices and isinstance(choices[0], dict) else {}
-    message = first.get("message")
-    if not isinstance(message, dict):
-        message = first.get("delta") if isinstance(first.get("delta"), dict) else {}
-
     base = {
         "id": chunk_id,
         "object": "chat.completion.chunk",
         "created": created,
         "model": model,
     }
-    opening = dict(base)
-    opening["choices"] = [
-        {
-            "index": 0,
-            "delta": {"role": "assistant", "content": ""},
-            "finish_reason": None,
-        }
-    ]
-    delta: dict[str, Any] = {"content": _text(message.get("content"))}
-    if message.get("tool_calls"):
-        delta["tool_calls"] = message["tool_calls"]
-    content_chunk = dict(base)
-    content_chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
-    closing = dict(base)
-    closing["choices"] = [
-        {
-            "index": 0,
-            "delta": {},
-            "finish_reason": first.get("finish_reason"),
-        }
-    ]
+    openings = []
+    contents = []
+    closings = []
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        index = choice.get("index", 0)
+        message = choice.get("message")
+        is_message = isinstance(message, dict)
+        if not is_message:
+            message = choice.get("delta")
+        if not isinstance(message, dict):
+            continue
+        openings.append(
+            {
+                "index": index,
+                "delta": {"role": "assistant", "content": ""},
+                "finish_reason": None,
+            }
+        )
+        delta: dict[str, Any] = {"content": _text(message.get("content"))}
+        if message.get("tool_calls"):
+            delta["tool_calls"] = message["tool_calls"]
+        if message.get("function_call"):
+            delta["function_call"] = message["function_call"]
+        if message.get("refusal"):
+            delta["refusal"] = message["refusal"]
+        contents.append({"index": index, "delta": delta, "finish_reason": None})
+        closings.append(
+            {
+                "index": index,
+                "delta": {},
+                "finish_reason": choice.get("finish_reason"),
+            }
+        )
 
-    chunks = [opening, content_chunk, closing]
+    chunks = []
+    for choice_chunks in (openings, contents, closings):
+        if choice_chunks:
+            chunk = dict(base)
+            chunk["choices"] = choice_chunks
+            chunks.append(chunk)
     if include_usage:
         usage_chunk = dict(base)
         usage_chunk["choices"] = []

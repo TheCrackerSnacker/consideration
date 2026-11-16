@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from consideration.errors import InvalidResult
-from consideration.state import MAX_KEYS, StateStore, apply_writes, state_value
+from consideration.state import MAX_KEYS, StateStore, apply_writes
 
 
 class StateTests(unittest.TestCase):
@@ -42,10 +42,6 @@ class StateTests(unittest.TestCase):
         snapshot = store.snapshot()
         snapshot["ns"]["a"] = 2
         self.assertEqual(store.get("ns"), {"a": 1})
-
-    def test_state_value_modes(self):
-        self.assertEqual(state_value({"a": 1}, "plaintext"), {"a": 1})
-        self.assertTrue(state_value({"a": 1}, "hash").startswith("sha256:"))
 
 
 if __name__ == "__main__":

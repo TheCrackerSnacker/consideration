@@ -27,7 +27,7 @@ def write_frame(value):
     sys.stdout.buffer.flush()
 
 
-def serve(plugin_id, hooks, handler):
+def serve(plugin_id, hooks, handler, *, read_only=False):
     config = {}
     for frame in iter(read_frame, None):
         method = frame.get("method")
@@ -35,10 +35,10 @@ def serve(plugin_id, hooks, handler):
         if method == "plugin/describe":
             result = {
                 "id": plugin_id,
-                "version": "0.1.0",
-                "contract": "0.1",
+                "version": "0.2.0",
+                "contract": "0.2",
                 "hooks": hooks,
-                "read_only": False,
+                "read_only": read_only,
             }
         elif method == "plugin/init":
             config = (frame.get("params") or {}).get("config") or {}

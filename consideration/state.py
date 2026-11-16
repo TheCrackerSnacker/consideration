@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .errors import InvalidResult
-from .util import canonical_json, deep_copy, json_hash
+from .util import canonical_json, deep_copy
 
 MAX_KEYS = 256
 MAX_BYTES = 64 * 1024
@@ -70,9 +70,3 @@ def apply_writes(
     if len(canonical_json(result).encode("utf-8")) > MAX_BYTES:
         raise InvalidResult(f"state exceeds {MAX_BYTES} bytes")
     return result, changed
-
-
-def state_value(value: Any, mode: str) -> Any:
-    if mode == "plaintext":
-        return deep_copy(value)
-    return json_hash(value)

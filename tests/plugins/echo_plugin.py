@@ -40,13 +40,13 @@ def main() -> None:
         if method == "plugin/describe":
             result = {
                 "id": CONFIG.get("describe_id", "acme/echo"),
-                "version": "0.1.0",
-                "contract": "0.1",
+                "version": "0.2.0",
+                "contract": "0.2",
                 "hooks": {
                     "server_bound": ["request"],
                     "client_bound": ["response"],
                 },
-                "read_only": False,
+                "read_only": os.environ.get("TEST_PLUGIN_READ_ONLY") == "true",
             }
         elif method == "plugin/init":
             CONFIG = (frame.get("params") or {}).get("config") or {}

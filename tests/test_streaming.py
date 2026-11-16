@@ -106,6 +106,70 @@ class StreamingTests(unittest.TestCase):
         chunks = parse(synthesize_sse(body))
         self.assertEqual(chunks[1]["choices"][0]["delta"]["content"], "ab")
 
+    def test_multiple_choices_are_preserved(self):
+        body = {
+            **BODY,
+            "choices": [
+                {
+                    "index": 2,
+                    "message": {"role": "assistant", "content": "first"},
+                    "finish_reason": "stop",
+                },
+                {
+                    "index": 4,
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{"id": "call_2"}],
+                    },
+                    "finish_reason": "tool_calls",
+                },
+            ],
+        }
+        chunks = parse(synthesize_sse(body))
+        self.assertEqual([choice["index"] for choice in chunks[0]["choices"]], [2, 4])
+        self.assertEqual(
+            [choice["delta"]["content"] for choice in chunks[1]["choices"]],
+            ["first", ""],
+        )
+        self.assertEqual(
+            chunks[1]["choices"][1]["delta"]["tool_calls"], [{"id": "call_2"}]
+        )
+        self.assertEqual(
+            [choice["finish_reason"] for choice in chunks[2]["choices"]],
+            ["stop", "tool_calls"],
+        )
+
+    def test_delta_response_content_and_function_call_are_synthesized(self):
+        body = {
+            "id": "delta-id",
+            "created": 10,
+            "model": "gpt-x",
+            "choices": [
+                {
+                    "index": 3,
+                    "delta": {
+                        "content": [
+                            {"type": "text", "text": "part "},
+                            {"type": "text", "text": "one"},
+                        ],
+                        "function_call": {"name": "lookup", "arguments": "{}"},
+                    },
+                    "finish_reason": "function_call",
+                }
+            ],
+            "usage": {"total_tokens": 2},
+        }
+        chunks = parse(synthesize_sse(body, include_usage=True))
+        self.assertEqual(chunks[1]["choices"][0]["index"], 3)
+        self.assertEqual(chunks[1]["choices"][0]["delta"]["content"], "part one")
+        self.assertEqual(
+            chunks[1]["choices"][0]["delta"]["function_call"],
+            {"name": "lookup", "arguments": "{}"},
+        )
+        self.assertEqual(chunks[2]["choices"][0]["finish_reason"], "function_call")
+        self.assertEqual(chunks[3]["usage"], {"total_tokens": 2})
+
 
 if __name__ == "__main__":
     unittest.main()

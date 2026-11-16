@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 from . import CONTRACT_VERSION
-from .config import Config, PluginEntry, contract_compatible
+from .config import (
+    Config,
+    ConfigError,
+    PluginEntry,
+    contract_compatible,
+    plugin_artifact_digest,
+)
 from .errors import (
     PluginCrash,
     PluginProtocolError,
@@ -21,6 +29,30 @@ from .errors import (
 )
 from .protocol import read_frame, write_frame
 from .util import new_namespace_id
+
+
+def validate_runtime_description(
+    described: dict[str, Any], manifest: dict[str, Any], plugin_id: str
+) -> None:
+    """Require the running plugin to report its installed manifest metadata."""
+    for key in ("version", "contract", "hooks", "read_only"):
+        if key not in described:
+            raise PluginProtocolError(f"plugin/describe is missing {key}")
+        if described[key] != manifest.get(key):
+            raise PluginProtocolError(
+                f"plugin/describe {key} does not match manifest for {plugin_id}"
+            )
+    if described.get("id") != plugin_id:
+        raise PluginProtocolError(
+            f"plugin/describe id {described.get('id')!r} does not match {plugin_id!r}"
+        )
+    contract = described.get("contract")
+    if not isinstance(contract, str) or not contract_compatible(
+        CONTRACT_VERSION, contract
+    ):
+        raise PluginProtocolError(
+            f"plugin contract {contract!r} is incompatible with {CONTRACT_VERSION}"
+        )
 
 
 class _Pending:
@@ -36,7 +68,7 @@ def _close_streams(proc: subprocess.Popen[bytes]) -> None:
         try:
             if stream is not None:
                 stream.close()
-        except Exception:
+        except OSError:
             pass
 
 
@@ -53,14 +85,14 @@ def _kill_process_tree(proc: subprocess.Popen[bytes]) -> None:
                 )
             else:
                 proc.kill()
-        except Exception:
+        except OSError:
             try:
                 proc.kill()
-            except Exception:
+            except OSError:
                 pass
     try:
         proc.wait(timeout=2)
-    except Exception:
+    except (subprocess.TimeoutExpired, OSError):
         pass
     _close_streams(proc)
 
@@ -109,6 +141,21 @@ class PluginInstance:
                 self._starting = False
 
     def _spawn_and_handshake(self) -> None:
+        try:
+            artifact_digest = plugin_artifact_digest(
+                list(self.entry.command),
+                Path(self.entry.cwd),
+                f"plugin {self.entry.id}",
+            )
+        except ConfigError as exc:
+            raise PluginProtocolError(f"cannot verify plugin artifact: {exc}") from exc
+        if (
+            artifact_digest is not None
+            and artifact_digest != self.entry.artifact_digest
+        ):
+            raise PluginProtocolError(
+                f"plugin {self.entry.id} artifact changed since configuration was loaded"
+            )
         env = dict(os.environ)
         env.update(self.entry.env)
         command = list(self.entry.command)
@@ -164,23 +211,11 @@ class PluginInstance:
         if not isinstance(described, dict):
             _kill_process_tree(proc)
             raise PluginProtocolError("plugin/describe did not return an object")
-        if described.get("id") != self.entry.id:
+        try:
+            validate_runtime_description(described, self.entry.manifest, self.entry.id)
+        except PluginProtocolError:
             _kill_process_tree(proc)
-            raise PluginProtocolError(
-                f"plugin/describe id {described.get('id')!r} does not match {self.entry.id!r}"
-            )
-        contract = described.get("contract")
-        if not isinstance(contract, str) or not contract_compatible(
-            CONTRACT_VERSION, contract
-        ):
-            _kill_process_tree(proc)
-            raise PluginProtocolError(
-                f"plugin contract {contract!r} is incompatible with {CONTRACT_VERSION}"
-            )
-        for key in ("version", "hooks", "read_only"):
-            if key not in described:
-                _kill_process_tree(proc)
-                raise PluginProtocolError(f"plugin/describe is missing {key}")
+            raise
         try:
             initialized = self._request(
                 "plugin/init",
@@ -385,8 +420,8 @@ class PluginInstance:
                             "params": {"id": request_id},
                         },
                     )
-        except Exception:
-            pass
+        except OSError as exc:
+            self._diagnostic("cancel", exc)
 
     # -- reader --------------------------------------------------------
 
@@ -401,14 +436,17 @@ class PluginInstance:
         except StageFailure as exc:
             self._fail_pending(generation, exc)
         except Exception as exc:
-            self._fail_pending(generation, PluginProtocolError(str(exc)))
+            self._fail_pending(
+                generation,
+                PluginProtocolError(f"plugin reader failed ({type(exc).__name__})"),
+            )
         finally:
             self._mark_dead(generation)
             try:
                 if proc.stdout is not None:
                     proc.stdout.close()
-            except Exception:
-                pass
+            except OSError as exc:
+                self._diagnostic("stdout_close", exc)
 
     def _dispatch(self, generation: int, frame: dict[str, Any]) -> None:
         with self._lock:
@@ -423,7 +461,7 @@ class PluginInstance:
                     "plugin.log",
                     plugin=self.entry.id,
                     level=str(params.get("level", "info")),
-                    message=str(params.get("message", ""))[:4096],
+                    message_length=len(str(params.get("message", ""))),
                 )
             return
         if request_id is None:
@@ -455,10 +493,11 @@ class PluginInstance:
                                 },
                             },
                         )
-            except Exception:
-                pass
+            except OSError as exc:
+                self._diagnostic("plugin_request_reply", exc)
 
     def _fail_pending(self, generation: int, exc: StageFailure) -> None:
+        self._diagnostic("protocol_reader", exc)
         with self._lock:
             if generation != self._generation:
                 return
@@ -492,22 +531,42 @@ class PluginInstance:
                         "plugin.log",
                         plugin=self.entry.id,
                         level="stderr",
-                        message=line[:4096],
+                        message_length=len(line),
                     )
-        except Exception:
+        except OSError as exc:
+            self._diagnostic("stderr_read", exc)
             return
         finally:
             try:
                 proc.stderr.close()
-            except Exception:
+            except OSError as exc:
+                self._diagnostic("stderr_close", exc)
                 pass
 
     def _emit(self, event: str, **fields: Any) -> None:
         if self.telemetry is not None:
             try:
                 self.telemetry.emit(event, **fields)
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "plugin telemetry event %s failed (%s)",
+                    event,
+                    type(exc).__name__,
+                )
+
+    def _diagnostic(self, operation: str, exc: BaseException) -> None:
+        self._emit(
+            "plugin.diagnostic",
+            plugin=self.entry.id,
+            operation=operation,
+            error_type=type(exc).__name__,
+        )
+        logging.getLogger(__name__).warning(
+            "plugin %s %s failed (%s)",
+            self.entry.id,
+            operation,
+            type(exc).__name__,
+        )
 
     # -- shutdown ------------------------------------------------------
 
@@ -529,17 +588,20 @@ class PluginInstance:
                                 "params": {},
                             },
                         )
-                    except Exception:
-                        pass
+                    except OSError as exc:
+                        self._diagnostic("shutdown_notification", exc)
                     try:
                         proc.stdin.close()
-                    except Exception:
-                        pass
+                    except OSError as exc:
+                        self._diagnostic("shutdown_stdin_close", exc)
                     try:
                         proc.wait(
                             timeout=self.config.plugins.shutdown_timeout_ms / 1000.0
                         )
                     except subprocess.TimeoutExpired:
+                        _kill_process_tree(proc)
+                    except OSError as exc:
+                        self._diagnostic("shutdown_wait", exc)
                         _kill_process_tree(proc)
                 else:
                     _kill_process_tree(proc)
@@ -595,18 +657,31 @@ class PluginManager:
         if self.telemetry is not None:
             try:
                 self.telemetry.emit(event, **fields)
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "plugin manager telemetry event %s failed (%s)",
+                    event,
+                    type(exc).__name__,
+                )
 
     def get(self, plugin_id: str) -> PluginInstance:
         return self.instances[plugin_id]
 
     def shutdown_all(self) -> None:
         threads = [
-            threading.Thread(target=instance.shutdown)
+            threading.Thread(target=self._shutdown_instance, args=(instance,))
             for instance in self.instances.values()
         ]
         for thread in threads:
             thread.start()
-        for thread in threads:
+        for instance, thread in zip(self.instances.values(), threads, strict=True):
             thread.join(timeout=self.config.plugins.shutdown_timeout_ms / 1000.0 + 2)
+            if thread.is_alive():
+                instance._diagnostic("shutdown_timeout", TimeoutError())
+
+    @staticmethod
+    def _shutdown_instance(instance: PluginInstance) -> None:
+        try:
+            instance.shutdown()
+        except Exception as exc:
+            instance._diagnostic("shutdown", exc)

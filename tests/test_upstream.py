@@ -7,6 +7,7 @@ from pathlib import Path
 from consideration.config import load_config
 from consideration.upstream import (
     UpstreamClient,
+    filter_response_header_items,
     filter_response_headers,
     is_credential_header,
 )
@@ -77,6 +78,18 @@ class UpstreamTests(unittest.TestCase):
         self.assertNotIn("x-api-key", {key.lower() for key in headers})
         self.assertNotIn("connection", {key.lower() for key in headers})
 
+    def test_connection_header_nominates_additional_request_headers(self):
+        headers = self.client().prepare_headers(
+            {
+                "Connection": "X-Client-Trace, keep-alive",
+                "X-Client-Trace": "must-not-forward",
+                "User-Agent": "preserved",
+            },
+            None,
+        )
+        self.assertNotIn("x-client-trace", {name.lower() for name in headers})
+        self.assertEqual(headers["User-Agent"], "preserved")
+
     def test_credential_detection(self):
         self.assertTrue(is_credential_header("Authorization"))
         self.assertTrue(is_credential_header("x-api-key"))
@@ -101,6 +114,42 @@ class UpstreamTests(unittest.TestCase):
                 "Content-Type": "application/json",
                 "OpenAI-Processing-Ms": "120",
             },
+        )
+
+    def test_response_connection_tokens_and_repeated_headers(self):
+        filtered = filter_response_header_items(
+            [
+                ("Connection", "X-Internal, keep-alive"),
+                ("X-Internal", "remove"),
+                ("Set-Cookie", "a=1; Path=/"),
+                ("Set-Cookie", "b=2; Path=/"),
+                ("Server", "backend"),
+                ("Via", "1.1 gateway"),
+                ("Alt-Svc", 'h3=":443"'),
+                ("Location", "/next"),
+                ("Refresh", "5; url=/next"),
+                ("WWW-Authenticate", "Bearer"),
+                ("Content-Security-Policy", "default-src 'none'"),
+                ("Strict-Transport-Security", "max-age=31536000"),
+                ("Access-Control-Allow-Origin", "*"),
+                ("Content-Length", "10"),
+            ]
+        )
+        self.assertEqual(
+            filtered,
+            [
+                ("Set-Cookie", "a=1; Path=/"),
+                ("Set-Cookie", "b=2; Path=/"),
+                ("Server", "backend"),
+                ("Via", "1.1 gateway"),
+                ("Alt-Svc", 'h3=":443"'),
+                ("Location", "/next"),
+                ("Refresh", "5; url=/next"),
+                ("WWW-Authenticate", "Bearer"),
+                ("Content-Security-Policy", "default-src 'none'"),
+                ("Strict-Transport-Security", "max-age=31536000"),
+                ("Access-Control-Allow-Origin", "*"),
+            ],
         )
 
 

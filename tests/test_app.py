@@ -180,7 +180,56 @@ class AppTests(SubsetAssertions, unittest.TestCase):
         self.assertEqual(upstream.calls[0]["method"], "GET")
         self.assertEqual(upstream.calls[0]["path"], "/v1/models")
 
-    def test_authorization_is_forwarded_but_not_exposed(self):
+    def test_all_non_chat_paths_are_transparent_passthrough(self):
+        app, upstream, _ = self.make_app(client_bound=False)
+        for path in (
+            "/v1/models/",
+            "/v1/files/file_1?download=true",
+            "/custom/path?q=1",
+        ):
+            response = app.handle(
+                InboundRequest(method="GET", path=path, headers={}, body=b"")
+            )
+            self.assertEqual(response.status, 200)
+        self.assertEqual(
+            [call["path"] for call in upstream.calls],
+            ["/v1/models/", "/v1/files/file_1?download=true", "/custom/path?q=1"],
+        )
+
+    def test_repeated_set_cookie_headers_survive_proxy_response(self):
+        app, _, _ = self.make_app(client_bound=False)
+        app.upstream = FakeUpstream(
+            [
+                raw_response(
+                    200,
+                    b"ok",
+                    [
+                        ("Set-Cookie", "a=1; Path=/"),
+                        ("Set-Cookie", "b=2; Path=/"),
+                        ("Content-Length", "2"),
+                        ("Connection", "X-Internal"),
+                        ("X-Internal", "remove"),
+                        ("Alt-Svc", 'h3=":443"'),
+                    ],
+                )
+            ]
+        )
+        response = app.handle(
+            InboundRequest(method="GET", path="/v1/models", headers={}, body=b"")
+        )
+        self.assertEqual(response.status, 200)
+        cookies = [
+            value
+            for name, value in (response.header_items or [])
+            if name.lower() == "set-cookie"
+        ]
+        self.assertEqual(cookies, ["a=1; Path=/", "b=2; Path=/"])
+        self.assertNotIn(
+            "x-internal", {name.lower() for name, _ in response.header_items}
+        )
+        self.assertIn("Alt-Svc", response.headers)
+
+    def test_hook_payloads_contain_no_headers(self):
         app, upstream, _ = self.make_app(
             plugin_config={"mode": "meta_patch"},
             client_bound=False,
@@ -201,13 +250,55 @@ class AppTests(SubsetAssertions, unittest.TestCase):
         self.assertEqual(
             upstream.calls[0]["headers"]["authorization"], "Bearer sk-client"
         )
-        meta = upstream.last_body()["x_meta"]
-        self.assertEqual(meta["headers"]["user-agent"], "openai-python/1.0")
-        self.assertEqual(meta["headers"]["x-request-id"], "req_client")
-        self.assertNotIn("authorization", meta["headers"])
-        self.assertNotIn("cookie", meta["headers"])
-        self.assertNotIn("x-secret-key", meta["headers"])
+        self.assertEqual(
+            upstream.last_body()["x_meta"],
+            {
+                "request_id": ANY,
+                "direction": "server_bound",
+                "path": "/v1/chat/completions",
+                "client": {"remote_addr": "127.0.0.1:1234"},
+                "received_at": ANY,
+            },
+        )
+
+        def assert_no_headers(value):
+            if isinstance(value, dict):
+                self.assertNotIn("headers", {key.lower() for key in value})
+                for child in value.values():
+                    assert_no_headers(child)
+            elif isinstance(value, list):
+                for child in value:
+                    assert_no_headers(child)
+
+        assert_no_headers(upstream.last_body())
         self.assertNotIn("sk-client", response.body.decode("utf-8"))
+
+    def test_client_bound_hook_context_contains_no_headers(self):
+        app, _, _ = self.make_app(
+            plugin_config={"mode": "context_patch"}, server_bound=False
+        )
+        response = self.post(
+            app,
+            headers={
+                "authorization": "Bearer context-secret",
+                "cookie": "session=context-cookie",
+                "user-agent": "test-client",
+            },
+        )
+        body = json.loads(response.body)
+
+        def assert_no_headers(value):
+            if isinstance(value, dict):
+                self.assertNotIn("headers", {key.lower() for key in value})
+                for child in value.values():
+                    assert_no_headers(child)
+            elif isinstance(value, list):
+                for child in value:
+                    assert_no_headers(child)
+
+        assert_no_headers(body)
+        self.assertNotIn("context-secret", response.body.decode())
+        self.assertNotIn("context-cookie", response.body.decode())
 
     # -- repair --------------------------------------------------------
 
@@ -617,11 +708,49 @@ class AppTests(SubsetAssertions, unittest.TestCase):
         self.assertGreaterEqual(record["duration_ms"], 0)
         self.assertEqual(record["response_bytes"], len(response.body))
 
+    def test_journal_write_failure_is_observable_and_request_succeeds(self):
+        app, _, _ = self.make_app(client_bound=False)
+
+        class BrokenJournal:
+            def write(self, _record):
+                raise OSError("disk unavailable")
+
+        class RecordingTelemetry:
+            def __init__(self):
+                self.events = []
+
+            def emit(self, event, **fields):
+                self.events.append((event, fields))
+
+        telemetry = RecordingTelemetry()
+        app.journal = BrokenJournal()
+        app.telemetry = telemetry
+        with self.assertLogs("consideration.app", level="ERROR") as logs:
+            response = self.post(app)
+        self.assertEqual(response.status, 200)
+        self.assertTrue(
+            any("journal.write_failed" == event for event, _ in telemetry.events)
+        )
+        self.assertIn("OSError", logs.output[0])
+
+    def test_telemetry_failure_is_logged_without_failing_request(self):
+        app, _, _ = self.make_app(client_bound=False)
+
+        class BrokenTelemetry:
+            def emit(self, _event, **_fields):
+                raise OSError("telemetry unavailable")
+
+        app.telemetry = BrokenTelemetry()
+        with self.assertLogs("consideration.app", level="WARNING") as logs:
+            response = self.post(app)
+        self.assertEqual(response.status, 200)
+        self.assertTrue(any("telemetry event" in line for line in logs.output))
+
     def test_journal_bodies_when_enabled(self):
         app, _, _ = self.make_app(
             plugin_config={"mode": "continue"},
             responses=[json_response()],
-            extra="journal:\n  include_bodies: true\n",
+            extra=("journal:\n  include_bodies: true\n  acknowledge_sensitive: true\n"),
         )
         self.post(app)
         record = self._read_journal()
@@ -629,11 +758,84 @@ class AppTests(SubsetAssertions, unittest.TestCase):
         self.assertFalse(record["bodies"]["response"]["truncated"])
         self.assertEqual(record["bodies"]["request"]["body"]["model"], "gpt-x")
 
+    def test_journal_redacts_credentials_when_bodies_are_enabled(self):
+        app, _, _ = self.make_app(
+            plugin_config={"mode": "continue"},
+            responses=[json_response()],
+            extra="journal:\n  include_bodies: true\n  acknowledge_sensitive: true\n",
+        )
+        self.post(
+            app,
+            headers={
+                "authorization": "Bearer journal-secret",
+                "cookie": "session=cookie-secret",
+                "proxy-authorization": "Basic proxy-secret",
+                "x-api-key": "api-key-secret",
+                "user-agent": "safe-agent",
+            },
+        )
+        record = self._read_journal()
+        serialized = json.dumps(record)
+        for secret in (
+            "journal-secret",
+            "cookie-secret",
+            "proxy-secret",
+            "api-key-secret",
+        ):
+            self.assertNotIn(secret, serialized)
+        self.assertIn("safe-agent", serialized)
+
+    def test_state_write_metadata_is_recorded_without_values_by_default(self):
+        app, _, _ = self.make_app(
+            plugin_config={"mode": "continue", "state_set": {"map": "private"}},
+        )
+        self.post(app)
+        writes = self._read_journal()["state_writes"]
+        self.assertTrue(writes)
+        self.assertEqual(writes[0]["keys"], ["map"])
+        self.assertTrue(writes[0]["committed"])
+        self.assertNotIn("values", writes[0])
+        self.assertNotIn("hash", writes[0])
+
+    def test_body_enabled_journal_records_exact_state_values(self):
+        app, _, _ = self.make_app(
+            plugin_config={"mode": "continue", "state_set": {"map": "private"}},
+            extra=("journal:\n  include_bodies: true\n  acknowledge_sensitive: true\n"),
+        )
+        self.post(app)
+        writes = self._read_journal()["state_writes"]
+        self.assertEqual(writes[0]["values"], {"set": {"map": "private"}})
+
+    def test_journal_bounds_oversized_valid_passthrough_json(self):
+        app, _, _ = self.make_app(
+            client_bound=False,
+            extra=(
+                "journal:\n  include_bodies: true\n"
+                "  acknowledge_sensitive: true\n  max_body_bytes: 32\n"
+            ),
+        )
+        app.upstream = FakeUpstream(
+            [raw_response(200, dumps({"result": "y" * 200}).encode())]
+        )
+        request_body = dumps({"input": "x" * 200}).encode()
+        app.handle(
+            InboundRequest(
+                method="POST",
+                path="/v1/other",
+                headers={"content-type": "application/json"},
+                body=request_body,
+            )
+        )
+        bodies = self._read_journal()["bodies"]
+        for name in ("request", "response"):
+            self.assertTrue(bodies[name]["truncated"])
+            self.assertLessEqual(len(bodies[name]["text"].encode()), 32)
+
     def test_journal_replay_matches_record(self):
         app, _, config = self.make_app(
-            plugin_config={"mode": "continue"},
+            plugin_config={"mode": "continue", "state_set": {"map": "replay-value"}},
             responses=[json_response(chat_body("replayed"))],
-            extra="journal:\n  include_bodies: true\n",
+            extra=("journal:\n  include_bodies: true\n  acknowledge_sensitive: true\n"),
         )
         self.post(app)
         journal_path = sorted((self.root / "journal").glob("journal-*.jsonl"))[0]
@@ -656,7 +858,7 @@ class AppTests(SubsetAssertions, unittest.TestCase):
                 json_response(chat_body("bad")),
                 json_response(chat_body("good")),
             ],
-            extra="journal:\n  include_bodies: true\n",
+            extra=("journal:\n  include_bodies: true\n  acknowledge_sensitive: true\n"),
         )
         self.post(app)
         journal_path = sorted((self.root / "journal").glob("journal-*.jsonl"))[0]
